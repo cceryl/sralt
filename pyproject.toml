@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sralt"
+version = "0.0.1"
+description = "SRALT"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
