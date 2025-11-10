@@ -91,7 +91,7 @@ def disk_cache(cache_dir: str = 'cache') -> Callable:
                 with open(cache_path, 'rb') as f:
                     return pickle.load(f)
 
-            logging.info(f'Caching result to {cache_path}.')
+            logging.info(f'Computing result of function {func.__name__} and caching to {cache_path}.')
             result = func(*args, **kwargs)
             with open(cache_path, 'wb') as f:
                 pickle.dump(result, f)
