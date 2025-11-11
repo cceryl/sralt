@@ -7,6 +7,7 @@ from numpy.typing import NDArray
 from torch_geometric.utils import to_undirected, coalesce
 
 from sralt.target.data import register_dataset, TargetData
+from sralt.utils import leave_one_out_split
 
 
 @register_dataset('Ciao')
@@ -103,25 +104,10 @@ class CiaoData(TargetData):
         ], dim=0))
 
         # Split behavioral edges into train/val/test sets
-        val_mask = torch.zeros_like(behavioral_edge_index[0], dtype=torch.bool)
-        test_mask = torch.zeros_like(behavioral_edge_index[0], dtype=torch.bool)
-
-        for u in range(self.num_users):
-            user_edge_idx = (behavioral_edge_index[0] == u).nonzero(as_tuple=True)[0]
-            num_interactions = user_edge_idx.numel()
-            if num_interactions < 3:
-                raise ValueError(f'User {u} has less than 3 interactions.')
-            perm = torch.randperm(num_interactions)
-            val_edge = user_edge_idx[perm[0]]
-            test_edge = user_edge_idx[perm[1]]
-            val_mask[val_edge] = True
-            test_mask[test_edge] = True
-
-        train_mask = ~(val_mask | test_mask)
-
-        self.behavioral_train_edge_index = behavioral_edge_index[:, train_mask]
-        self.behavioral_val_edge_index = behavioral_edge_index[:, val_mask]
-        self.behavioral_test_edge_index = behavioral_edge_index[:, test_mask]
+        train_edge_index, val_edge_index, test_edge_index = leave_one_out_split(behavioral_edge_index, self.num_users)
+        self.behavioral_train_edge_index = train_edge_index
+        self.behavioral_val_edge_index = val_edge_index
+        self.behavioral_test_edge_index = test_edge_index
 
         logging.info(
             f'Ciao dataset preprocessing completed with '

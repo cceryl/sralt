@@ -53,3 +53,10 @@ class TargetModel(nn.Module, ABC):
         :return: Loss tensor of shape specified by the actual model.
         """
         pass
+
+    @abstractmethod
+    def __repr__(self) -> str:
+        """
+        String representation and fingerprint of the target model.
+        """
+        pass

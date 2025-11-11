@@ -1,10 +1,11 @@
 import torch
 import torch.nn.functional as F
 
-from sralt.target.model import register_target_model, TargetModel
+from .twin import TwinGCN
 from .social import SocialGCN
 from .rating import RatingGCN
-from .twin import TwinGCN
+from sralt.target.model import register_target_model, TargetModel
+from sralt.utils import calculate_model_fingerprint
 
 
 @register_target_model('DESIGN')
@@ -93,3 +94,15 @@ class DESIGN(TargetModel):
             distill_loss += F.kl_div(student_log_probs, teacher_log_probs, reduction='batchmean', log_target=True)
 
         return rank_loss + self.decay * reg_loss + self.distill_weight * distill_loss
+
+    def __repr__(self) -> str:
+        return (
+            f'DESIGN(num_users={self.num_users}, '
+            f'num_items={self.num_items}, '
+            f'embed_dim={self.twin.embeds.embedding_dim}, '
+            f'user_fusion_layers={self.twin.user_fusion_layers}, '
+            f'item_fusion_layers={self.twin.item_fusion_layers}, '
+            f'decay={self.decay}, '
+            f'distill_weight={self.distill_weight}, '
+            f'fingerprint={calculate_model_fingerprint(self)})'
+        )

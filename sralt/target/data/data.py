@@ -92,7 +92,7 @@ class TargetData(ABC):
 
     def __init__(self, name: str, directory: str):
         """
-        Initialize the TargetData.
+        Initialize the target data.
 
         :param name: The name of the dataset.
         :param directory: The directory where the dataset is stored.
