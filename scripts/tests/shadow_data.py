@@ -1,11 +1,11 @@
-# This file conducts sanity tests for the shadow data generation process.
+# This file conducts sanity tests for the shadow data generation process and the dataset classes.
 
 import torch
 
 from sralt.utils import set_seed, get_device, setup_logging
 from sralt.target.data import load_dataset
 from sralt.target.model import create_target_model
-from sralt.shadow.data import ShadowData
+from sralt.shadow.data import ShadowData, TrainShadowDataset, EvalShadowDataset
 
 model_path = './runs/design_ciao_test/model.pth'
 
@@ -74,3 +74,13 @@ behavioral_edges_set = set(
 for u, v in shadow_data.behavioral_edge_index.t().tolist():
     assert (u, v) not in behavioral_edges_set
 print('Behavioral edges disjoint check passed.')
+
+
+train_dataset = TrainShadowDataset(shadow_data)
+val_dataset = EvalShadowDataset(shadow_data, split='val', num_negative_samples=999)
+test_dataset = EvalShadowDataset(shadow_data, split='test', num_negative_samples=999)
+
+print('Datasets representations:')
+print(train_dataset)
+print(val_dataset)
+print(test_dataset)

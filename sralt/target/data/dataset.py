@@ -9,7 +9,7 @@ from .data import TargetData
 
 class BaseTargetDataset(Dataset, ABC):
     """
-    Base class for datasets used in target social recommendation models.
+    Base dataset class for target social recommendation models.
     """
 
     def __init__(self, data: TargetData):

@@ -1,5 +1,4 @@
 import logging
-from dataclasses import dataclass
 
 import torch
 from torch_geometric.utils import coalesce, to_undirected
@@ -9,92 +8,10 @@ from sralt.target.model import TargetModel
 from sralt.utils import leave_one_out_split
 
 
-@dataclass(init=False)
-class ShadowData():
+class ShadowData(TargetData):
     """
     The graph data for training shadow social recommendation models.
     """
-    target_data_repr: str
-    target_model_repr: str
-    shadow_social_ratio: float
-    num_recommendations: int
-    device: torch.device
-
-    num_users: int
-    num_items: int
-
-    # Undirected user-user social graph edge index of shape (2, 2 * num_social_edges)
-    social_edge_index: torch.Tensor
-
-    # Directed user-item behavioral training graph edge index of shape (2, num_behavioral_train_edges)
-    behavioral_train_edge_index: torch.Tensor
-
-    # Directed user-item behavioral validation graph edge index of shape (2, num_behavioral_val_edges)
-    behavioral_val_edge_index: torch.Tensor
-
-    # Directed user-item behavioral test graph edge index of shape (2, num_behavioral_test_edges)
-    behavioral_test_edge_index: torch.Tensor
-
-    @property
-    def num_nodes(self) -> int:
-        return self.num_users + self.num_items
-
-    @property
-    def node_range(self) -> range:
-        return range(0, self.num_users + self.num_items)
-
-    @property
-    def user_range(self) -> range:
-        return range(0, self.num_users)
-
-    @property
-    def item_range(self) -> range:
-        return range(self.num_users, self.num_users + self.num_items)
-
-    @property
-    def num_social_edges(self) -> int:
-        return self.social_edge_index.size(1) // 2
-
-    @property
-    def behavioral_edge_index(self) -> torch.Tensor:
-        return torch.cat([
-            self.behavioral_train_edge_index,
-            self.behavioral_val_edge_index,
-            self.behavioral_test_edge_index
-        ], dim=1)
-
-    @property
-    def num_behavioral_edges(self) -> int:
-        return (
-            self.behavioral_train_edge_index.size(1) +
-            self.behavioral_val_edge_index.size(1) +
-            self.behavioral_test_edge_index.size(1)
-        )
-
-    @property
-    def num_behavioral_train_edges(self) -> int:
-        return self.behavioral_train_edge_index.size(1)
-
-    @property
-    def num_behavioral_val_edges(self) -> int:
-        return self.behavioral_val_edge_index.size(1)
-
-    @property
-    def num_behavioral_test_edges(self) -> int:
-        return self.behavioral_test_edge_index.size(1)
-
-    def to(self, device: torch.device) -> 'ShadowData':
-        """
-        Move all tensors to the specified device.
-
-        :param device: The target device.
-        """
-        self.device = device
-        self.social_edge_index = self.social_edge_index.to(device)
-        self.behavioral_train_edge_index = self.behavioral_train_edge_index.to(device)
-        self.behavioral_val_edge_index = self.behavioral_val_edge_index.to(device)
-        self.behavioral_test_edge_index = self.behavioral_test_edge_index.to(device)
-        return self
 
     @torch.no_grad()
     def __init__(
