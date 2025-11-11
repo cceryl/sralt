@@ -1,13 +1,14 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
+from sralt.target.model import register_target_model, TargetModel
 from .social import SocialGCN
 from .rating import RatingGCN
 from .twin import TwinGCN
 
 
-class DESIGN(nn.Module):
+@register_target_model('DESIGN')
+class DESIGN(TargetModel):
     """
     Distillation Enhanced Social Graph Network for recommendation.
     """
@@ -26,7 +27,7 @@ class DESIGN(nn.Module):
         :param decay: L2 regularization coefficient.
         :param distill_weight: Weight for the distillation loss.
         """
-        super().__init__()
+        super().__init__(num_users, num_items)
 
         self.social = SocialGCN(num_users, num_items, embed_dim, user_fusion_layers)
         self.rating = RatingGCN(num_users, num_items, embed_dim, user_fusion_layers, item_fusion_layers)

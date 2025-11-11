@@ -1,24 +1,17 @@
 from dataclasses import dataclass
-from abc import ABC, abstractmethod
+from abc import ABC
 
 import torch
 
 
 @dataclass(init=False)
-class Data(ABC):
+class TargetData(ABC):
     """
-    The graph data for a social recommendation dataset.
+    The graph data for training target social recommendation models.
     """
 
-    @dataclass
-    class Config():
-        """
-        Base class for data configuration.
-        """
-        name: str
-        data_dir: str
-
-    config: Config
+    name: str
+    directory: str
     device: torch.device
 
     num_users: int
@@ -84,9 +77,9 @@ class Data(ABC):
     def num_behavioral_test_edges(self) -> int:
         return self.behavioral_test_edge_index.size(1)
 
-    def to(self, device: torch.device) -> 'Data':
+    def to(self, device: torch.device) -> 'TargetData':
         """
-        Move all data tensors to the specified device.
+        Move all tensors to the specified device.
 
         :param device: The target device.
         """
@@ -97,23 +90,16 @@ class Data(ABC):
         self.behavioral_test_edge_index = self.behavioral_test_edge_index.to(device)
         return self
 
-    @abstractmethod
-    def load(self, config: Config):
+    def __init__(self, name: str, directory: str):
         """
-        Load data according to the given configuration.
+        Initialize the TargetData.
 
-        :param config: The data configuration.
+        :param name: The name of the dataset.
+        :param directory: The directory where the dataset is stored.
         """
-        pass
-
-    def __init__(self, config: Config):
-        self.config = config
+        self.name = name
+        self.directory = directory
         self.device = torch.device('cpu')
-        self.load(config)
-
-        for member_name in self.__dataclass_fields__.keys():
-            if getattr(self, member_name, None) is None:
-                raise ValueError(f'Data member "{member_name}" is not initialized in dataset {self.config.name}.')
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}(config={self.config})'
+        return f'{self.__class__.__name__}(name={self.name}, directory={self.directory})'

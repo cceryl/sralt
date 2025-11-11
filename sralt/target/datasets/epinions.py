@@ -1,56 +1,53 @@
 import os
 import logging
-from dataclasses import dataclass
 
 import torch
 import scipy.io
 from numpy.typing import NDArray
 from torch_geometric.utils import to_undirected, coalesce
 
-from . import register_dataset
-from .data import Data
+from sralt.target.data import register_dataset, TargetData
 
 
-@register_dataset('epinions')
-class EpinionsData(Data):
+@register_dataset('Epinions')
+class EpinionsData(TargetData):
     """
     The Epinions social recommendation dataset.
     """
 
-    @dataclass
-    class Config(Data.Config):
-        # The minimum rating to consider an interaction as positive
-        min_rating: int
-
-        # The minimum number of social connections a user must have to be included
-        min_social_connections: int
-
-        # The minimum number of positive item interactions a user must have to be included
-        min_user_interactions: int
-
-        # The minimum number of positive user interactions an item must have to be included
-        min_item_interactions: int
-
-    def load(self, config: Data.Config):
+    def __init__(
+        self, name: str, directory: str,
+        min_rating: int, min_social_connections: int, min_user_interactions: int, min_item_interactions: int
+    ):
         """
-        Loads and preprocesses the Epinions dataset.
+        Load and preprocess the Epinions dataset.
 
-        :param config: Configuration parameters for loading the dataset.
+        :param name: The name of the dataset.
+        :param directory: The directory where the dataset is stored.
+        :param min_rating: The minimum rating to consider an interaction as positive.
+        :param min_social_connections: The minimum number of social connections a user must have to be included.
+        :param min_user_interactions: The minimum number of positive item interactions a user must have to be included.
+        :param min_item_interactions: The minimum number of positive user interactions an item must have to be included.
         """
-        assert isinstance(config, EpinionsData.Config)
-        logging.info(f'Loading Epinions dataset from {config.data_dir}...')
+        super().__init__(name, directory)
+        logging.info(f'Loading Epinions dataset from {directory}...')
+
+        self.min_rating = min_rating
+        self.min_social_connections = min_social_connections
+        self.min_user_interactions = min_user_interactions
+        self.min_item_interactions = min_item_interactions
 
         # Rows of (user_id, user_id)
-        social_mat: NDArray = scipy.io.loadmat(os.path.join(config.data_dir, 'trustnetwork.mat'))['trustnetwork']
+        social_mat: NDArray = scipy.io.loadmat(os.path.join(directory, 'trustnetwork.mat'))['trustnetwork']
         # Rows of (user_id, item_id, category_id, rating)
-        rating_mat: NDArray = scipy.io.loadmat(os.path.join(config.data_dir, 'rating.mat'))['rating']
+        rating_mat: NDArray = scipy.io.loadmat(os.path.join(directory, 'rating.mat'))['rating']
 
         # Filter bad interactions and convert to edge indices
         social_data = torch.from_numpy(social_mat).long()
         social_edge_index = to_undirected(social_data.t())
 
         rating_data = torch.from_numpy(rating_mat).long()
-        behavioral_edge_index = coalesce(rating_data[rating_data[:, 3] >= config.min_rating][:, :2].t())
+        behavioral_edge_index = coalesce(rating_data[rating_data[:, 3] >= min_rating][:, :2].t())
 
         # Iteratively filter users and items based on minimum interactions and social connections
         max_user_id = int(torch.cat([behavioral_edge_index[0], social_edge_index[0]]).max().item()) + 1
@@ -64,10 +61,10 @@ class EpinionsData(Data):
             item_interaction_counts = torch.bincount(behavioral_edge_index[1], minlength=max_item_id)
 
             valid_users = (
-                (user_social_counts >= config.min_social_connections) &
-                (user_interaction_counts >= config.min_user_interactions)
+                (user_social_counts >= min_social_connections) &
+                (user_interaction_counts >= min_user_interactions)
             ).nonzero().flatten()
-            valid_items = (item_interaction_counts >= config.min_item_interactions).nonzero().flatten()
+            valid_items = (item_interaction_counts >= min_item_interactions).nonzero().flatten()
 
             social_mask = torch.isin(social_edge_index[0], valid_users) & torch.isin(social_edge_index[1], valid_users)
             social_edge_index = social_edge_index[:, social_mask]
@@ -132,4 +129,13 @@ class EpinionsData(Data):
             f'{self.num_items} items, '
             f'{self.num_social_edges} social edges, '
             f'{self.num_behavioral_edges} behavioral edges.'
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f'EpinionsData(directory={self.directory}, '
+            f'min_rating={self.min_rating}, '
+            f'min_social_connections={self.min_social_connections}, '
+            f'min_user_interactions={self.min_user_interactions}, '
+            f'min_item_interactions={self.min_item_interactions})'
         )

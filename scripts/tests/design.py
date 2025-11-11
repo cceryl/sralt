@@ -12,14 +12,14 @@ from torch_geometric.utils import to_undirected
 from torch_geometric.metrics import LinkPredRecall, LinkPredNDCG
 from torch_geometric.metrics.link_pred import LinkPredMetric
 
-from sralt.model.target import DESIGN
-from sralt.data import load_dataset, Data, TrainTargetDataset, EvalTargetDataset
+from sralt.target.model import create_target_model, TargetModel
+from sralt.target.data import load_dataset, TargetData, TrainTargetDataset, EvalTargetDataset
 from sralt.utils import setup_logging, timer, get_device, set_seed, EarlyStopping
 
 
 @torch.no_grad()
 def compute_metrics_at_k(
-    model: DESIGN, data: Data, metrics: dict[type[LinkPredMetric], list[int]], eval_loader: DataLoader
+    model: TargetModel, data: TargetData, metrics: dict[type[LinkPredMetric], list[int]], eval_loader: DataLoader
 ) -> dict[type[LinkPredMetric], list[float]]:
     """
     Compute multiple metrics (e.g., Recall, NDCG) at given k(s).
@@ -56,7 +56,7 @@ def compute_metrics_at_k(
         users_range = torch.arange(users.size(0), device=data.device)
         candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
         candidate_mask[users_range.unsqueeze(1), candidate_items - data.item_range.start] = True
-        scores[~candidate_mask] = float("-inf")
+        scores[~candidate_mask] = float('-inf')
 
         # Get top-k item indices for each user
         _, top_items = torch.topk(scores, k=max_k, sorted=True)
@@ -77,7 +77,7 @@ def compute_metrics_at_k(
 
 @timer()
 def train(
-    model: DESIGN, data: Data, train_loader: DataLoader, eval_loader: DataLoader,
+    model: TargetModel, data: TargetData, train_loader: DataLoader, eval_loader: DataLoader,
     optimizer: optim.Optimizer, num_epochs: int, early_stopping: EarlyStopping,
     metrics: dict[type[LinkPredMetric], list[int]], writer: SummaryWriter | None = None,
 ):
@@ -96,7 +96,7 @@ def train(
     """
     undirected_behavioral_train_edge_index = to_undirected(data.behavioral_train_edge_index)
     metric_names = {
-        metric_cls: [f"{metric_cls.__name__.replace('LinkPred', '')}@{k}" for k in ks]
+        metric_cls: [f'{metric_cls.__name__.replace('LinkPred', '')}@{k}' for k in ks]
         for metric_cls, ks in metrics.items()
     }
 
@@ -107,7 +107,7 @@ def train(
         total_loss = 0.0
         total_samples = 0
 
-        for users, pos_items, neg_items in tqdm(train_loader, desc=f"Epoch {epoch}/{num_epochs}"):
+        for users, pos_items, neg_items in tqdm(train_loader, desc=f'Epoch {epoch}/{num_epochs}'):
             optimizer.zero_grad()
 
             pos_edges = torch.stack([users, pos_items], dim=0)
@@ -126,7 +126,7 @@ def train(
 
         loss = total_loss / total_samples
         if writer is not None:
-            writer.add_scalar("Loss/train", loss, epoch)
+            writer.add_scalar('Loss/train', loss, epoch)
 
         # Evaluation
         metrics_results = {
@@ -135,12 +135,12 @@ def train(
             for name, value in zip(metric_names[metric_cls], values)
         }
 
-        metrics_str = ", ".join([f"{name}={value:.4f}" for name, value in metrics_results.items()])
-        logging.info(f"Evaluation at epoch {epoch:04d}: loss={loss:.4f}, {metrics_str}")
+        metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in metrics_results.items()])
+        logging.info(f'Evaluation at epoch {epoch:04d}: loss={loss:.4f}, {metrics_str}')
 
         if writer is not None:
             for name, value in metrics_results.items():
-                writer.add_scalar(f"{name}/val", value, epoch)
+                writer.add_scalar(f'{name}/val', value, epoch)
 
         if early_stopping.step(sum(metrics_results.values())):
             break
@@ -149,20 +149,24 @@ def train(
 
 
 def main():
-    runs_path = "runs/design_ciao_test"
+    runs_path = 'runs/design_ciao_test'
     os.makedirs(runs_path, exist_ok=True)
-    setup_logging(log_file=os.path.join(runs_path, "train.log"), tz='Asia/Shanghai')
+    setup_logging(log_file=os.path.join(runs_path, 'train.log'), tz='Asia/Shanghai')
     writer = SummaryWriter(log_dir=runs_path)
 
     set_seed(42)
     device = get_device(allow_share=True)
 
-    data = load_dataset(name='ciao', data_dir='./data/ciao', config={
-        'min_rating': 2,
-        'min_social_connections': 1,
-        'min_user_interactions': 5,
-        'min_item_interactions': 0
-    }).to(device)
+    data = load_dataset(
+        name='Ciao',
+        directory='./data/ciao',
+        config={
+            'min_rating': 2,
+            'min_social_connections': 1,
+            'min_user_interactions': 5,
+            'min_item_interactions': 0
+        }
+    ).to(device)
     train_dataset = TrainTargetDataset(data)
     val_dataset = EvalTargetDataset(data, split='val', num_negative_samples=999)
     test_dataset = EvalTargetDataset(data, split='test', num_negative_samples=999)
@@ -170,9 +174,17 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=2048, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=2048, shuffle=False)
 
-    model = DESIGN(
-        num_users=data.num_users, num_items=data.num_items, embed_dim=64,
-        user_fusion_layers=[0, 1, 2], item_fusion_layers=[0, 1, 2], decay=5e-3, distill_weight=0.1
+    model = create_target_model(
+        name='DESIGN',
+        num_users=data.num_users,
+        num_items=data.num_items,
+        config={
+            'embed_dim': 64,
+            'user_fusion_layers': [0, 1, 2],
+            'item_fusion_layers': [0, 1, 2],
+            'decay': 5e-3,
+            'distill_weight': 0.1
+        }
     ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-2)
     early_stopping = EarlyStopping(model, patience=30, greater_is_better=True)
@@ -187,11 +199,11 @@ def main():
     final_metrics = compute_metrics_at_k(model, data, metrics, test_loader)
     for metric_cls, values in final_metrics.items():
         for k, value in zip(metrics[metric_cls], values):
-            logging.info(f"Final {metric_cls.__name__.replace('LinkPred', '')}@{k}: {value:.4f}")
+            logging.info(f'Final {metric_cls.__name__.replace('LinkPred', '')}@{k}: {value:.4f}')
 
-    torch.save(model.state_dict(), os.path.join(runs_path, "model.pth"))
+    torch.save(model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

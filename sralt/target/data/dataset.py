@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 
-from sralt.data.source import Data
+from .data import TargetData
 
 
 class BaseTargetDataset(Dataset, ABC):
@@ -12,7 +12,7 @@ class BaseTargetDataset(Dataset, ABC):
     Base class for datasets used in target social recommendation models.
     """
 
-    def __init__(self, data: Data):
+    def __init__(self, data: TargetData):
         """
         Initializes the dataset with the provided data object.
 
@@ -129,7 +129,7 @@ class EvalTargetDataset(BaseTargetDataset):
     Dataset class for evaluation data in target social recommendation models.
     """
 
-    def __init__(self, data: Data, split: str = 'val', num_negative_samples: int = 100):
+    def __init__(self, data: TargetData, split: str = 'val', num_negative_samples: int = 999):
         """
         Initializes the evaluation dataset with the provided data object and number of negative samples.
 
@@ -137,7 +137,7 @@ class EvalTargetDataset(BaseTargetDataset):
         :param split: The data split to use ('val' or 'test').
         :param num_negative_samples: The number of negative samples to generate for each positive interaction.
         """
-        assert split in ['val', 'test'], "split must be either 'val' or 'test'"
+        assert split in ['val', 'test'], 'split must be either "val" or "test"'
         self.split = split
         self.num_negative_samples = num_negative_samples
 
