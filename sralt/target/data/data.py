@@ -1,5 +1,6 @@
-from dataclasses import dataclass
 from abc import ABC
+from typing import Self
+from dataclasses import dataclass
 
 import torch
 
@@ -77,7 +78,7 @@ class TargetData(ABC):
     def num_behavioral_test_edges(self) -> int:
         return self.behavioral_test_edge_index.size(1)
 
-    def to(self, device: torch.device) -> 'TargetData':
+    def to(self, device: torch.device) -> Self:
         """
         Move all tensors to the specified device.
 

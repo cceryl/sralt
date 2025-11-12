@@ -119,7 +119,8 @@ class EpinionsData(TargetData):
 
     def __repr__(self) -> str:
         return (
-            f'EpinionsData(directory={self.directory}, '
+            f'EpinionsData('
+            f'directory={self.directory}, '
             f'min_rating={self.min_rating}, '
             f'min_social_connections={self.min_social_connections}, '
             f'min_user_interactions={self.min_user_interactions}, '

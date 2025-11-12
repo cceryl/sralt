@@ -97,7 +97,8 @@ class DESIGN(TargetModel):
 
     def __repr__(self) -> str:
         return (
-            f'DESIGN(num_users={self.num_users}, '
+            f'DESIGN('
+            f'num_users={self.num_users}, '
             f'num_items={self.num_items}, '
             f'embed_dim={self.twin.embeds.embedding_dim}, '
             f'user_fusion_layers={self.twin.user_fusion_layers}, '
