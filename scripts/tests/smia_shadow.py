@@ -7,7 +7,6 @@ import logging
 import torch
 import torch.optim as optim
 from tqdm import tqdm
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.utils import to_undirected
 from torch_geometric.metrics import LinkPredRecall, LinkPredNDCG
@@ -17,7 +16,7 @@ from sralt.target.data import load_dataset
 from sralt.target.model import create_target_model
 from sralt.shadow.data import ShadowData, TrainShadowDataset, EvalShadowDataset
 from sralt.shadow.model import create_shadow_model, ShadowModel
-from sralt.utils import setup_logging, timer, get_device, set_seed, EarlyStopping
+from sralt.utils import setup_logging, timer, get_device, set_seed, DataLoader, EarlyStopping
 
 
 @torch.no_grad()
@@ -88,7 +87,7 @@ def compute_metrics_at_k(
 def train(
     model: ShadowModel, data: ShadowData, train_loader: DataLoader, eval_loader: DataLoader,
     optimizer: optim.Optimizer, num_epochs: int, early_stopping: EarlyStopping,
-    metrics: dict[type[LinkPredMetric], list[int]], writer: SummaryWriter | None = None,
+    metrics: dict[type[LinkPredMetric], list[int]], writer: SummaryWriter | None = None
 ):
     """
     Train the shadow model.

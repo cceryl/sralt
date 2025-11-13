@@ -17,8 +17,9 @@ class ShadowModel(TargetModel):
         """
         super().__init__(num_users, num_items)
 
+    @torch.no_grad()
     @abstractmethod
-    def get_attack_features(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
+    def get_user_features(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
         """
         Get the user features learned by the shadow model for attack purposes.
 

@@ -72,7 +72,8 @@ class SMIAShadow(ShadowModel):
             self.behavioral_branch.recommendation_loss(pos_scores[1], neg_scores[1], nodes, lambda_reg=self.decay)
         )
 
-    def get_attack_features(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
+    @torch.no_grad()
+    def get_user_features(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
         """
         Get the user features learned by the shadow model for attack purposes.
 

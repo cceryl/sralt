@@ -34,7 +34,7 @@ def create_shadow_model(name: str, num_users: int, num_items: int, config: dict[
     :return: An instance of the model.
     """
     if name not in registry:
-        raise NotImplementedError(f'Target model "{name}" not found.')
+        raise NotImplementedError(f'Shadow model "{name}" not found.')
 
     cls = registry[name]
     return cls(num_users=num_users, num_items=num_items, **config)

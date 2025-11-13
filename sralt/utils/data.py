@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader as TorchDataLoader
 
 
 def leave_one_out_split(edge_index: torch.Tensor, num_users: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -27,3 +28,14 @@ def leave_one_out_split(edge_index: torch.Tensor, num_users: int) -> tuple[torch
     train_mask = ~(val_mask | test_mask)
 
     return edge_index[:, train_mask], edge_index[:, val_mask], edge_index[:, test_mask]
+
+
+class DataLoader(TorchDataLoader):
+    """
+    A custom DataLoader that forbids multiprocessing to avoid negative sampling inconsistency.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        if 'num_workers' in kwargs and kwargs['num_workers'] > 0:
+            raise ValueError('Multiprocessing is forbidden to avoid negative sampling inconsistency.')
+        return super().__new__(cls)

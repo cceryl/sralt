@@ -83,6 +83,7 @@ class TargetData(ABC):
         Move all tensors to the specified device.
 
         :param device: The target device.
+        :return: The TargetData object on the specified device.
         """
         self.device = device
         self.social_edge_index = self.social_edge_index.to(device)

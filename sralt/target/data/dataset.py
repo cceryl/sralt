@@ -25,18 +25,17 @@ class BaseTargetDataset(Dataset, ABC):
 
         self.access_counter = 0
 
-    def __getitem__(self, index: int | slice | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Retrieves the data sample at the specified indices.
+        Retrieves the data sample at the specified index.
 
-        :param index: Indices of the data sample to retrieve.
-        :return: A tuple of (user, positive_item, negative_item) at the specified indices.
+        :param index: The index of the sample to retrieve.
+        :return: A tuple of (user, positive_item, negative_item) at the specified index.
         """
         if self.access_counter == 0:
             self.negative_items = self.sample_negative_items()
 
         self.access_counter = (self.access_counter + 1) % len(self)
-        torch.Tensor.__getitem__
 
         return self.users[index], self.positive_items[index], self.negative_items[index]
 
@@ -110,13 +109,12 @@ class TrainTargetDataset(BaseTargetDataset):
 
         return neg_items.to(self.data.device)
 
-    def __getitem__(self, index: int | slice | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Retrieves the data sample at the specified indices.
-        The returned tensors are all scalar if index is an integer, or of shape (batch_size,) if index is a slice or tensor.
+        Retrieves the data sample at the specified index.
 
-        :param index: Indices of the data sample to retrieve.
-        :return: A tuple of (user, positive_item, negative_item) at the specified indices
+        :param index: The index of the sample to retrieve.
+        :return: A tuple of (user, positive_item, negative_item) at the specified index, all tensors are scalar.
         """
         return super().__getitem__(index)
 
@@ -188,14 +186,13 @@ class EvalTargetDataset(BaseTargetDataset):
 
         return neg_items.view(num_edges, self.num_negative_samples).to(self.data.device)
 
-    def __getitem__(self, index: int | slice | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Retrieves the data sample at the specified indices.
-        The returned tensors are respectively scalar, scalar, and of shape (num_negative_samples,) if index is an integer,
-        or of shape (batch_size,), (batch_size,), and (batch_size, num_negative_samples) if index is a slice or tensor.
+        Retrieves the data sample at the specified index.
 
-        :param index: Indices of the data sample to retrieve.
-        :return: A tuple of (user, positive_item, negative_items) at the specified indices
+        :param index: The index of the sample to retrieve.
+        :return: A tuple of (user, positive_item, negative_items) at the specified index, where negative_items is of shape
+                 (num_negative_samples,) and the others are scalars.
         """
         return super().__getitem__(index)
 
