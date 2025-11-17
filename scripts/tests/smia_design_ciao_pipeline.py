@@ -77,6 +77,7 @@ def compute_metrics_at_k(
     user_embeds, item_embeds = torch.split(embeds, [data.num_users, data.num_items], dim=0)
 
     # Prepare metrics calculators
+    metrics = [metric.to(data.device) for metric in metrics]
     max_k = max([metric.k for metric in metrics])
     for metric in metrics:
         metric.reset()
@@ -229,7 +230,7 @@ def train_attack_model(
     :param writer: Optional TensorBoard SummaryWriter for logging.
     """
     model_name = model.__class__.__name__
-    metrics_names = [metric.__class__.__name__ for metric in metrics]
+    metrics_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -273,7 +274,7 @@ def train_attack_model(
 
 @timer()
 def main():
-    runs_path = 'runs/repro/target_test_seed42_repro'
+    runs_path = 'runs/smia_design_ciao_pipeline_test'
     os.makedirs(runs_path, exist_ok=True)
     setup_logging(log_file=os.path.join(runs_path, 'train.log'), tz='Asia/Shanghai')
     writer = SummaryWriter(log_dir=runs_path)
@@ -316,12 +317,12 @@ def main():
         }
     ).to(device)
     optimizer = optim.Adam(target_model.parameters(), lr=1e-2)
-    early_stopping = EarlyStopping(target_model, patience=30, greater_is_better=True)
+    early_stopping = EarlyStopping(target_model, patience=20, greater_is_better=True)
     recommendation_metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
 
     train_recommendation_model(
         model=target_model, data=target_data, train_loader=train_loader, eval_loader=val_loader,
-        optimizer=optimizer, num_epochs=300, early_stopping=early_stopping,
+        optimizer=optimizer, num_epochs=200, early_stopping=early_stopping,
         metrics=recommendation_metrics, writer=writer
     )
 
@@ -419,7 +420,7 @@ def main():
 
     optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=5e-3, weight_decay=1e-2, grad_clip_norm=5.0)
     loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
-    early_stopping = EarlyStopping(shadow_model, patience=10, greater_is_better=True)
+    early_stopping = EarlyStopping(shadow_model, patience=5, greater_is_better=True)
     binary_metrics: list[Metric] = [
         AUROC(task='binary'),
         F1Score(task='binary'),
@@ -431,14 +432,14 @@ def main():
     train_attack_model(
         model=attack_model, optimizer=optimizer, loss_fn=loss_fn,
         user_features=user_features, train_loader=train_loader, eval_loader=val_loader,
-        num_epochs=100, early_stopping=early_stopping,
+        num_epochs=50, early_stopping=early_stopping,
         metrics=binary_metrics, metrics_weights=metrics_weights,
         writer=writer
     )
 
     final_metrics = compute_binary_metrics(attack_model, user_features, test_loader, binary_metrics)
     for metric, value in zip(binary_metrics, final_metrics):
-        logging.info(f'Final {metric.__class__.__name__}: {value:.4f}')
+        logging.info(f'Final {metric.__class__.__name__.removeprefix('Binary')}: {value:.4f}')
 
     torch.save(shadow_model.state_dict(), os.path.join(runs_path, 'attack_model.pth'))
     logging.info('Attack model training completed.')

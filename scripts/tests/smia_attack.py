@@ -95,7 +95,7 @@ def train(
     :param metrics_weights: A list of weights for each metric to compute a weighted sum for early stopping.
     :param writer: Optional TensorBoard SummaryWriter for logging.
     """
-    metrics_names = [metric.__class__.__name__ for metric in metrics]
+    metrics_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -242,7 +242,7 @@ def main():
 
     final_metrics = compute_binary_metrics(attack_model, user_features, test_loader, metrics)
     for metric, value in zip(metrics, final_metrics):
-        logging.info(f'Final {metric.__class__.__name__}: {value:.4f}')
+        logging.info(f'Final {metric.__class__.__name__.removeprefix('Binary')}: {value:.4f}')
 
     torch.save(shadow_model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()

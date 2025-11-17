@@ -31,16 +31,20 @@ def compute_metrics_at_k(model: TargetModel, data: TargetData, metrics: list[Lin
     model.eval()
 
     split = typing.cast(EvalTargetDataset, eval_loader.dataset).split
-    behavioral_edge_index = [data.behavioral_train_edge_index]
-    if split == 'test':
-        behavioral_edge_index.append(data.behavioral_val_edge_index)
-    behavioral_edge_index = torch.cat(behavioral_edge_index, dim=1)
+    if split == 'val':
+        behavioral_edge_index = data.behavioral_train_edge_index
+    elif split == 'test':
+        behavioral_edge_index = torch.cat([data.behavioral_train_edge_index, data.behavioral_val_edge_index], dim=1)
+    else:
+        raise ValueError(f'Unknown split: {split}')
+
 
     # Extract user and item embeddings
     embeds = model.get_embedding(data.social_edge_index, to_undirected(behavioral_edge_index))
     user_embeds, item_embeds = torch.split(embeds, [data.num_users, data.num_items], dim=0)
 
     # Prepare metrics calculators
+    metrics = [metric.to(data.device) for metric in metrics]
     max_k = max([metric.k for metric in metrics])
     for metric in metrics:
         metric.reset()

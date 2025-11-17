@@ -120,10 +120,10 @@ assert embeddings.size(1) == 2 * 64
 print('Get embedding check passed.')
 
 # Get attack features test
-attack_features = shadow_model.get_attack_features(
+user_features = shadow_model.get_user_features(
     social_edge_index=shadow_data.social_edge_index,
     behavioral_edge_index=shadow_data.behavioral_train_edge_index
 )
-assert attack_features.size(0) == shadow_data.num_users
-assert attack_features.size(1) == 4 * 64
+assert user_features.size(0) == shadow_data.num_users
+assert user_features.size(1) == 4 * 64
 print('Get attack features check passed.')
