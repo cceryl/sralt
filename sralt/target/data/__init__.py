@@ -2,7 +2,6 @@ from typing import Callable
 
 from .data import TargetData
 from .dataset import TrainTargetDataset, EvalTargetDataset
-from sralt.utils import disk_cache
 
 
 registry: dict[str, type[TargetData]] = {}
@@ -21,7 +20,6 @@ def register_dataset(name: str) -> Callable:
     return decorator
 
 
-@disk_cache('.cache')
 def load_dataset(name: str, directory: str, config: dict[str, object]) -> TargetData:
     """
     Load a dataset by name and path.

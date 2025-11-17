@@ -20,17 +20,15 @@ from sralt.utils import setup_logging, timer, get_device, set_seed, DataLoader, 
 
 
 @torch.no_grad()
-def compute_metrics_at_k(
-    model: ShadowModel, data: ShadowData, metrics: dict[type[LinkPredMetric], list[int]], eval_loader: DataLoader
-) -> dict[type[LinkPredMetric], list[float]]:
+def compute_metrics_at_k(model: ShadowModel, data: ShadowData, metrics: list[LinkPredMetric], eval_loader: DataLoader) -> list[float]:
     """
     Compute multiple metrics (e.g., Recall, NDCG) at given k(s).
 
     :param model: The shadow model.
     :param data: The data on which to compute the metrics.
-    :param metrics: A dictionary where keys are metric classes (subclasses of LinkPredMetric) and values are lists of k values.
+    :param metrics: A list of metric calculators.
     :param eval_loader: DataLoader for evaluation data.
-    :return: The computed metrics as a dictionary where keys are metric classes and values are lists of metric values corresponding to the k values.
+    :return: The computed metrics as a list of floats.
     """
     model.eval()
 
@@ -45,10 +43,9 @@ def compute_metrics_at_k(
     user_embeds, item_embeds = torch.split(embeds, [data.num_users, data.num_items], dim=0)
 
     # Prepare metrics calculators
-    max_k = max([max(ks) for ks in metrics.values()])
-    calculators: dict[type[LinkPredMetric], list[LinkPredMetric]] = {
-        metric_cls: [metric_cls(k).to(data.device) for k in ks] for metric_cls, ks in metrics.items()
-    }
+    max_k = max([metric.k for metric in metrics])
+    for metric in metrics:
+        metric.reset()
 
     for users, pos_items, neg_items in eval_loader:
         users: torch.Tensor
@@ -73,21 +70,17 @@ def compute_metrics_at_k(
         edge_label_index = torch.stack([users_range, pos_items - data.item_range.start])
 
         # Update all calculators
-        for calculator_list in calculators.values():
-            for calculator in calculator_list:
-                calculator.update(top_items[:, :calculator.k], edge_label_index)
+        for metric in metrics:
+            metric.update(top_items[:, :metric.k], edge_label_index)
 
-    return {
-        metric_cls: [calculator.compute().item() for calculator in calculator_list]
-        for metric_cls, calculator_list in calculators.items()
-    }
+    return [metric.compute().item() for metric in metrics]
 
 
 @timer()
 def train(
     model: ShadowModel, data: ShadowData, train_loader: DataLoader, eval_loader: DataLoader,
     optimizer: optim.Optimizer, num_epochs: int, early_stopping: EarlyStopping,
-    metrics: dict[type[LinkPredMetric], list[int]], writer: SummaryWriter | None = None
+    metrics: list[LinkPredMetric], writer: SummaryWriter | None = None
 ):
     """
     Train the shadow model.
@@ -99,14 +92,13 @@ def train(
     :param optimizer: The optimizer for training.
     :param num_epochs: The number of training epochs.
     :param early_stopping: Early stopping mechanism.
-    :param metrics: A dictionary where keys are metric classes (subclasses of LinkPredMetric) and values are lists of k values.
+    :param metrics: A list of metric calculators.
     :param writer: Optional TensorBoard SummaryWriter for logging.
     """
     undirected_behavioral_train_edge_index = to_undirected(data.behavioral_train_edge_index)
-    metric_names = {
-        metric_cls: [f'{metric_cls.__name__.replace('LinkPred', '')}@{k}' for k in ks]
-        for metric_cls, ks in metrics.items()
-    }
+    metric_names = [
+        typing.cast(str, metric.__class__.__name__).removeprefix('LinkPred') + f'@{metric.k}' for metric in metrics
+    ]
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -138,20 +130,15 @@ def train(
             writer.add_scalar('Loss/train', loss, epoch)
 
         # Evaluation
-        metrics_results = {
-            name: value
-            for metric_cls, values in compute_metrics_at_k(model, data, metrics, eval_loader).items()
-            for name, value in zip(metric_names[metric_cls], values)
-        }
-
-        metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in metrics_results.items()])
+        metrics_results = compute_metrics_at_k(model, data, metrics, eval_loader)
+        metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metric_names, metrics_results)])
         logging.info(f'Evaluation at epoch {epoch:04d}: loss={loss:.4f}, {metrics_str}')
 
         if writer is not None:
-            for name, value in metrics_results.items():
+            for name, value in zip(metric_names, metrics_results):
                 writer.add_scalar(f'{name}/val', value, epoch)
 
-        if early_stopping.step(sum(metrics_results.values())):
+        if early_stopping.step(sum(metrics_results)):
             break
 
     early_stopping.load_best_state()
@@ -220,7 +207,7 @@ def main():
 
     optimizer = optim.Adam(shadow_model.parameters(), lr=1e-2)
     early_stopping = EarlyStopping(shadow_model, patience=10, greater_is_better=True)
-    metrics = {LinkPredRecall: [10], LinkPredNDCG: [10]}
+    metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
 
     train(
         model=shadow_model, data=shadow_data, train_loader=train_loader, eval_loader=val_loader,
@@ -229,9 +216,11 @@ def main():
     )
 
     final_metrics = compute_metrics_at_k(shadow_model, shadow_data, metrics, test_loader)
-    for metric_cls, values in final_metrics.items():
-        for k, value in zip(metrics[metric_cls], values):
-            logging.info(f'Final {metric_cls.__name__.replace('LinkPred', '')}@{k}: {value:.4f}')
+    metrics_names = [
+        typing.cast(str, metric.__class__.__name__).removeprefix('LinkPred') + f'@{metric.k}' for metric in metrics
+    ]
+    for name, value in zip(metrics_names, final_metrics):
+        logging.info(f'Final {name}: {value:.4f}')
 
     torch.save(shadow_model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()

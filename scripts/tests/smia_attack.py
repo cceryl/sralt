@@ -3,6 +3,7 @@
 import os
 import typing
 import logging
+import warnings
 
 import torch
 import torch.nn as nn
@@ -46,26 +47,29 @@ class AdamWithGradientClipping(optim.Adam):
 
 
 @torch.no_grad()
-def compute_binary_metrics(model: AttackModel, user_features: torch.Tensor, eval_loader: DataLoader, metrics: list[type[Metric]]) -> list[float]:
+def compute_binary_metrics(model: AttackModel, user_features: torch.Tensor, eval_loader: DataLoader, metrics: list[Metric]) -> list[float]:
     """
     Compute binary classification metrics.
 
     :param model: The attack model.
     :param user_features: The user features tensor of shape (num_users, user_feature_dim).
     :param eval_loader: DataLoader for evaluation data.
-    :param metrics: A list of metric classes to compute.
+    :param metrics: A list of metric calculators.
     :return: A list of computed metric values.
     """
     model.eval()
-    calculators = [metric_cls(task='binary').to(user_features.device) for metric_cls in metrics]
+
+    metrics = [metric.to(user_features.device) for metric in metrics]
+    for metric in metrics:
+        metric.reset()
 
     for user1, user2, labels in eval_loader:
         probs = model.predict(torch.stack([user1, user2]), user_features)
 
-        for calculator in calculators:
-            calculator.update(probs, labels)
+        for metric in metrics:
+            metric.update(probs, labels)
 
-    return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators]
+    return [typing.cast(torch.Tensor, metric.compute()).item() for metric in metrics]
 
 
 @timer()
@@ -73,7 +77,8 @@ def train(
     model: AttackModel, optimizer: optim.Optimizer, loss_fn: nn.Module,
     user_features: torch.Tensor, train_loader: DataLoader, eval_loader: DataLoader,
     num_epochs: int, early_stopping: EarlyStopping,
-    metrics: list[type[Metric]], writer: SummaryWriter | None = None
+    metrics: list[Metric], metrics_weights: list[float],
+    writer: SummaryWriter | None = None
 ):
     """
     Train the attack model.
@@ -86,9 +91,12 @@ def train(
     :param eval_loader: DataLoader for evaluation data.
     :param num_epochs: The number of training epochs.
     :param early_stopping: Early stopping mechanism.
-    :param metrics: A list of metric classes to evaluate.
+    :param metrics: A list of metric calculators.
+    :param metrics_weights: A list of weights for each metric to compute a weighted sum for early stopping.
     :param writer: Optional TensorBoard SummaryWriter for logging.
     """
+    metrics_names = [metric.__class__.__name__ for metric in metrics]
+
     for epoch in range(1, num_epochs + 1):
         model.train()
 
@@ -114,19 +122,16 @@ def train(
             writer.add_scalar('Loss/train', average_loss, epoch)
 
         # Evaluation
-        metrics_results = {
-            f'{metric_cls.__name__}': value for metric_cls, value in
-            zip(metrics, compute_binary_metrics(model, user_features, eval_loader, metrics))
-        }
-
-        metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in metrics_results.items()])
+        metrics_results = compute_binary_metrics(model, user_features, eval_loader, metrics)
+        metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
         logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
 
         if writer is not None:
-            for name, value in metrics_results.items():
+            for name, value in zip(metrics_names, metrics_results):
                 writer.add_scalar(f'{name}/val', value, epoch)
 
-        if early_stopping.step(sum(metrics_results.values())):
+        weighted_metric = sum([weight * value for weight, value in zip(metrics_weights, metrics_results)])
+        if early_stopping.step(weighted_metric):
             break
 
     early_stopping.load_best_state()
@@ -217,24 +222,39 @@ def main():
         }
     ).to(device)
 
-    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=5e-3, weight_decay=0.0, grad_clip_norm=5.0)
+    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=5e-3, weight_decay=1e-2, grad_clip_norm=5.0)
     loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
-    early_stopping = EarlyStopping(shadow_model, patience=30, greater_is_better=True)
-    metrics: list[type[Metric]] = [AUROC, F1Score, Precision, Recall]
+    early_stopping = EarlyStopping(shadow_model, patience=10, greater_is_better=True)
+    metrics: list[Metric] = [
+        AUROC(task='binary'),
+        F1Score(task='binary'),
+        Precision(task='binary'),
+        Recall(task='binary')
+    ]
+    metrics_weights = [1.0, 1.0, 0.0, 0.0]
 
     train(
         model=attack_model, optimizer=optimizer, loss_fn=loss_fn,
         user_features=user_features, train_loader=train_loader, eval_loader=val_loader,
-        num_epochs=300, early_stopping=early_stopping, metrics=metrics, writer=writer
+        num_epochs=100, early_stopping=early_stopping,
+        metrics=metrics, metrics_weights=metrics_weights, writer=writer
     )
 
     final_metrics = compute_binary_metrics(attack_model, user_features, test_loader, metrics)
-    for metric_cls, value in zip(metrics, final_metrics):
-        logging.info(f'Final {metric_cls.__name__}: {value:.4f}')
+    for metric, value in zip(metrics, final_metrics):
+        logging.info(f'Final {metric.__class__.__name__}: {value:.4f}')
 
     torch.save(shadow_model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()
 
 
 if __name__ == '__main__':
+    warnings.filterwarnings(
+        'ignore',
+        message=''
+        'You are trying to use a metric in deterministic mode on GPU that uses `torch.cumsum`, which is currently not supported. '
+        'The tensor will be copied to the CPU memory to compute it and then copied back to GPU. Expect some slowdowns.',
+        module="torchmetrics.utilities.prints"
+    )
+
     main()

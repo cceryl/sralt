@@ -24,6 +24,8 @@ def set_seed(seed: int, deterministic: bool = True):
 
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.benchmark = not deterministic
+    torch.use_deterministic_algorithms(True)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
     logging.info(f'Random seed={seed}, deterministic={deterministic}.')
 
