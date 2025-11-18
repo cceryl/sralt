@@ -210,12 +210,12 @@ def main():
     ).to(device)
 
     optimizer = optim.Adam(shadow_model.parameters(), lr=1e-2)
-    early_stopping = EarlyStopping(shadow_model, patience=10, greater_is_better=True)
+    early_stopping = EarlyStopping(shadow_model, patience=15, greater_is_better=True)
     metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
 
     train(
         model=shadow_model, data=shadow_data, train_loader=train_loader, eval_loader=val_loader,
-        optimizer=optimizer, num_epochs=100, early_stopping=early_stopping,
+        optimizer=optimizer, num_epochs=150, early_stopping=early_stopping,
         metrics=metrics, writer=writer
     )
 

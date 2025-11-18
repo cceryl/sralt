@@ -143,7 +143,7 @@ dependencies:
   - openh264=2.1.1=h4ff587b_0
   - openjpeg=2.5.2=h0d4d230_1
   - openldap=2.6.10=h8e75217_0
-  - openssl=3.0.17=h5eee18b_0
+  - openssl=3.0.18=hd6dcaed_0
   - packaging=25.0=py312h06a4308_0
   - pandas=2.3.1=py312h277b779_0
   - pcre2=10.42=hebb0a14_1
@@ -178,6 +178,7 @@ dependencies:
   - readline=8.3=hc2a1206_0
   - requests=2.32.4=py312h06a4308_0
   - scipy=1.16.0=py312h0cc6016_0
+  - seaborn=0.13.2=py312h06a4308_3
   - setuptools=78.1.1=py312h06a4308_0
   - sip=6.10.0=py312h6a678d5_0
   - six=1.17.0=py312h06a4308_0

@@ -21,9 +21,9 @@ from sralt.attack.model import create_attack_model, AttackModel
 from sralt.utils import setup_logging, timer, get_device, set_seed, DataLoader, EarlyStopping
 
 
-class AdamWithGradientClipping(optim.Adam):
+class AdamWithGradientClipping(optim.AdamW):
     """
-    Adam optimizer with gradient clipping.
+    AdamW optimizer with gradient clipping.
     """
 
     def __init__(self, params, lr: float = 1e-3, weight_decay: float = 0.0, grad_clip_norm: float = 1.0):
@@ -222,9 +222,9 @@ def main():
         }
     ).to(device)
 
-    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=5e-3, weight_decay=1e-2, grad_clip_norm=5.0)
+    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=1e-3, weight_decay=1e-4, grad_clip_norm=5.0)
     loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
-    early_stopping = EarlyStopping(shadow_model, patience=10, greater_is_better=True)
+    early_stopping = EarlyStopping(attack_model, patience=10, greater_is_better=True)
     metrics: list[Metric] = [
         AUROC(task='binary'),
         F1Score(task='binary'),
@@ -244,7 +244,7 @@ def main():
     for metric, value in zip(metrics, final_metrics):
         logging.info(f'Final {metric.__class__.__name__.removeprefix('Binary')}: {value:.4f}')
 
-    torch.save(shadow_model.state_dict(), os.path.join(runs_path, 'model.pth'))
+    torch.save(attack_model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()
 
 

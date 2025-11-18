@@ -112,7 +112,7 @@ def compute_metrics_at_k(
 
 
 @torch.no_grad()
-def compute_binary_metrics(model: AttackModel, user_features: torch.Tensor, eval_loader: DataLoader, metrics: list[Metric]) -> list[float]:
+def compute_attack_metrics(model: AttackModel, user_features: torch.Tensor, eval_loader: DataLoader, metrics: list[Metric]) -> list[float]:
     """
     Compute binary classification metrics.
 
@@ -257,7 +257,7 @@ def train_attack_model(
             writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
         # Evaluation
-        metrics_results = compute_binary_metrics(model, user_features, eval_loader, metrics)
+        metrics_results = compute_attack_metrics(model, user_features, eval_loader, metrics)
         metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
         logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
 
@@ -318,17 +318,17 @@ def main():
     ).to(device)
     optimizer = optim.Adam(target_model.parameters(), lr=1e-2)
     early_stopping = EarlyStopping(target_model, patience=20, greater_is_better=True)
-    recommendation_metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
+    target_metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
 
     train_recommendation_model(
         model=target_model, data=target_data, train_loader=train_loader, eval_loader=val_loader,
         optimizer=optimizer, num_epochs=200, early_stopping=early_stopping,
-        metrics=recommendation_metrics, writer=writer
+        metrics=target_metrics, writer=writer
     )
 
-    final_metrics = compute_metrics_at_k(target_model, target_data, recommendation_metrics, test_loader)
+    final_metrics = compute_metrics_at_k(target_model, target_data, target_metrics, test_loader)
     metrics_names = [
-        typing.cast(str, metric.__class__.__name__).removeprefix('LinkPred') + f'@{metric.k}' for metric in recommendation_metrics
+        typing.cast(str, metric.__class__.__name__).removeprefix('LinkPred') + f'@{metric.k}' for metric in target_metrics
     ]
     for name, value in zip(metrics_names, final_metrics):
         logging.info(f'Target model final {name}: {value:.4f}')
@@ -369,17 +369,17 @@ def main():
 
     optimizer = optim.Adam(shadow_model.parameters(), lr=1e-2)
     early_stopping = EarlyStopping(shadow_model, patience=10, greater_is_better=True)
-    recommendation_metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
+    shadow_metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
 
     train_recommendation_model(
         model=shadow_model, data=shadow_data, train_loader=train_loader, eval_loader=val_loader,
         optimizer=optimizer, num_epochs=100, early_stopping=early_stopping,
-        metrics=recommendation_metrics, writer=writer
+        metrics=shadow_metrics, writer=writer
     )
 
-    final_metrics = compute_metrics_at_k(target_model, target_data, recommendation_metrics, test_loader)
+    final_metrics = compute_metrics_at_k(shadow_model, shadow_data, shadow_metrics, test_loader)
     metrics_names = [
-        typing.cast(str, metric.__class__.__name__).removeprefix('LinkPred') + f'@{metric.k}' for metric in recommendation_metrics
+        typing.cast(str, metric.__class__.__name__).removeprefix('LinkPred') + f'@{metric.k}' for metric in shadow_metrics
     ]
     for name, value in zip(metrics_names, final_metrics):
         logging.info(f'Shadow model final {name}: {value:.4f}')
@@ -420,8 +420,8 @@ def main():
 
     optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=5e-3, weight_decay=1e-2, grad_clip_norm=5.0)
     loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
-    early_stopping = EarlyStopping(shadow_model, patience=5, greater_is_better=True)
-    binary_metrics: list[Metric] = [
+    early_stopping = EarlyStopping(attack_model, patience=5, greater_is_better=True)
+    attack_metrics: list[Metric] = [
         AUROC(task='binary'),
         F1Score(task='binary'),
         Precision(task='binary'),
@@ -433,15 +433,15 @@ def main():
         model=attack_model, optimizer=optimizer, loss_fn=loss_fn,
         user_features=user_features, train_loader=train_loader, eval_loader=val_loader,
         num_epochs=50, early_stopping=early_stopping,
-        metrics=binary_metrics, metrics_weights=metrics_weights,
+        metrics=attack_metrics, metrics_weights=metrics_weights,
         writer=writer
     )
 
-    final_metrics = compute_binary_metrics(attack_model, user_features, test_loader, binary_metrics)
-    for metric, value in zip(binary_metrics, final_metrics):
+    final_metrics = compute_attack_metrics(attack_model, user_features, test_loader, attack_metrics)
+    for metric, value in zip(attack_metrics, final_metrics):
         logging.info(f'Final {metric.__class__.__name__.removeprefix('Binary')}: {value:.4f}')
 
-    torch.save(shadow_model.state_dict(), os.path.join(runs_path, 'attack_model.pth'))
+    torch.save(attack_model.state_dict(), os.path.join(runs_path, 'attack_model.pth'))
     logging.info('Attack model training completed.')
     writer.close()
 
