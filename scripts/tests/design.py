@@ -38,7 +38,6 @@ def compute_metrics_at_k(model: TargetModel, data: TargetData, metrics: list[Lin
     else:
         raise ValueError(f'Unknown split: {split}')
 
-
     # Extract user and item embeddings
     embeds = model.get_embedding(data.social_edge_index, to_undirected(behavioral_edge_index))
     user_embeds, item_embeds = torch.split(embeds, [data.num_users, data.num_items], dim=0)
@@ -50,30 +49,29 @@ def compute_metrics_at_k(model: TargetModel, data: TargetData, metrics: list[Lin
         metric.reset()
 
     for users, pos_items, neg_items in eval_loader:
-        users: torch.Tensor
-        pos_items: torch.Tensor
-        neg_items: torch.Tensor
+        assert max_k <= neg_items.size(1) + 1, 'Number of candidate items must be at least k.'
 
-        # Calculate scores
-        user_emb_batch = user_embeds[users - data.user_range.start]
+        # Adjust indices to 0-based
+        users: torch.Tensor = users - data.user_range.start
+        pos_items: torch.Tensor = pos_items - data.item_range.start
+        neg_items: torch.Tensor = neg_items - data.item_range.start
+
+        # Calculate scores for candidate items
         candidate_items = torch.cat([pos_items.unsqueeze(1), neg_items], dim=1)
-        scores = user_emb_batch @ item_embeds.t()
+        user_embeds_batch = user_embeds[users].unsqueeze(1)
+        item_embeds_batch = item_embeds[candidate_items]
+        scores = (user_embeds_batch * item_embeds_batch).sum(dim=-1)
 
-        # Mask out items not in the candidate set
-        users_range = torch.arange(users.size(0), device=data.device)
-        candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
-        candidate_mask[users_range.unsqueeze(1), candidate_items - data.item_range.start] = True
-        scores[~candidate_mask] = float('-inf')
-
-        # Get top-k item indices for each user
-        _, top_items = torch.topk(scores, k=max_k, sorted=True)
-
-        # Build edge_label_index
-        edge_label_index = torch.stack([users_range, pos_items - data.item_range.start])
+        # Get top-k item indices among candidate items for each user
+        _, topk_local = torch.topk(scores, k=max_k, sorted=True)
+        topk_global = torch.gather(candidate_items, 1, topk_local)
 
         # Update all calculators
+        users_range = torch.arange(users.size(0), device=data.device)
+        edge_label_index = torch.stack([users_range, pos_items])
+
         for metric in metrics:
-            metric.update(top_items[:, :metric.k], edge_label_index)
+            metric.update(topk_global[:, :metric.k], edge_label_index)
 
     return [metric.compute().item() for metric in metrics]
 
@@ -184,12 +182,12 @@ def main():
         }
     ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-2)
-    early_stopping = EarlyStopping(model, patience=30, greater_is_better=True)
+    early_stopping = EarlyStopping(model, patience=20, greater_is_better=True)
     metrics = [LinkPredRecall(k=10), LinkPredNDCG(k=10)]
 
     train(
         model=model, data=data, train_loader=train_loader, eval_loader=val_loader,
-        optimizer=optimizer, num_epochs=300, early_stopping=early_stopping,
+        optimizer=optimizer, num_epochs=200, early_stopping=early_stopping,
         metrics=metrics, writer=writer
     )
 

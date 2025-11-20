@@ -162,30 +162,29 @@ def compute_metrics_at_k(
         metric.reset()
 
     for users, pos_items, neg_items in eval_loader:
-        users: torch.Tensor
-        pos_items: torch.Tensor
-        neg_items: torch.Tensor
+        assert max_k <= neg_items.size(1) + 1, 'Number of candidate items must be at least k.'
 
-        # Calculate scores
-        user_emb_batch = user_embeds[users - data.user_range.start]
+        # Adjust indices to 0-based
+        users: torch.Tensor = users - data.user_range.start
+        pos_items: torch.Tensor = pos_items - data.item_range.start
+        neg_items: torch.Tensor = neg_items - data.item_range.start
+
+        # Calculate scores for candidate items
         candidate_items = torch.cat([pos_items.unsqueeze(1), neg_items], dim=1)
-        scores = user_emb_batch @ item_embeds.t()
+        user_embeds_batch = user_embeds[users].unsqueeze(1)
+        item_embeds_batch = item_embeds[candidate_items]
+        scores = (user_embeds_batch * item_embeds_batch).sum(dim=-1)
 
-        # Mask out items not in the candidate set
-        users_range = torch.arange(users.size(0), device=data.device)
-        candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
-        candidate_mask[users_range.unsqueeze(1), candidate_items - data.item_range.start] = True
-        scores[~candidate_mask] = float('-inf')
-
-        # Get top-k item indices for each user
-        _, top_items = torch.topk(scores, k=max_k, sorted=True)
-
-        # Build edge_label_index
-        edge_label_index = torch.stack([users_range, pos_items - data.item_range.start])
+        # Get top-k item indices among candidate items for each user
+        _, topk_local = torch.topk(scores, k=max_k, sorted=True)
+        topk_global = torch.gather(candidate_items, 1, topk_local)
 
         # Update all calculators
+        users_range = torch.arange(users.size(0), device=data.device)
+        edge_label_index = torch.stack([users_range, pos_items])
+
         for metric in metrics:
-            metric.update(top_items[:, :metric.k], edge_label_index)
+            metric.update(topk_global[:, :metric.k], edge_label_index)
 
     return [metric.compute().item() for metric in metrics]
 
@@ -484,7 +483,7 @@ def main():
     val_dataset = EvalAttackDataset(attack_data, split='val')
     test_dataset = EvalAttackDataset(attack_data, split='test')
 
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=1024, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=2048, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=2048, shuffle=False)
 
@@ -497,7 +496,7 @@ def main():
         }
     ).to(device)
 
-    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=5e-3, weight_decay=1e-2, grad_clip_norm=5.0)
+    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=1e-3, weight_decay=1e-4, grad_clip_norm=5.0)
     loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
     early_stopping = EarlyStopping(attack_model, patience=5, greater_is_better=True)
     attack_metrics: list[Metric] = [

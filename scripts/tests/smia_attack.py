@@ -303,7 +303,7 @@ def main():
 
     optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=1e-3, weight_decay=1e-4, grad_clip_norm=5.0)
     loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
-    early_stopping = EarlyStopping(attack_model, patience=10, greater_is_better=True)
+    early_stopping = EarlyStopping(attack_model, patience=5, greater_is_better=True)
     metrics: list[Metric] = [
         AUROC(task='binary'),
         TPRatFPR(target_fpr=0.01),
@@ -316,7 +316,7 @@ def main():
     train(
         model=attack_model, optimizer=optimizer, loss_fn=loss_fn,
         user_features=user_features, train_loader=train_loader, eval_loader=val_loader,
-        num_epochs=100, early_stopping=early_stopping,
+        num_epochs=50, early_stopping=early_stopping,
         metrics=metrics, metrics_weights=metrics_weights, writer=writer
     )
 
