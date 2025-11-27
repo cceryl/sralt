@@ -1,8 +1,7 @@
 import os
 import pkgutil
 import importlib
-from typing import Callable
-
+from typing import Any, Callable
 
 from .base import TargetModel
 
@@ -23,7 +22,7 @@ def register_target_model(name: str) -> Callable:
     return decorator
 
 
-def create_target_model(name: str, num_users: int, num_items: int, config: dict[str, object]) -> TargetModel:
+def create_target_model(name: str, num_users: int, num_items: int, config: dict[str, Any]) -> TargetModel:
     """
     Create a target model by name.
 

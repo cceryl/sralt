@@ -1,8 +1,7 @@
 import os
 import pkgutil
 import importlib
-from typing import Callable
-
+from typing import Any, Callable
 
 from .base import ShadowModel
 
@@ -23,7 +22,7 @@ def register_shadow_model(name: str) -> Callable:
     return decorator
 
 
-def create_shadow_model(name: str, num_users: int, num_items: int, config: dict[str, object]) -> ShadowModel:
+def create_shadow_model(name: str, num_users: int, num_items: int, config: dict[str, Any]) -> ShadowModel:
     """
     Create a shadow model by name.
 

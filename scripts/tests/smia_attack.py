@@ -1,12 +1,10 @@
 # This file tests the SMIA attacker on the pre-trained SMIA shadow model.
 
 import os
-import typing
 import logging
 import warnings
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torchmetrics import Metric, AUROC, F1Score, Precision, Recall
 from torch.utils.tensorboard import SummaryWriter
@@ -17,8 +15,8 @@ from sralt.target.model import create_target_model
 from sralt.shadow.data import ShadowData
 from sralt.shadow.model import create_shadow_model
 from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset
-from sralt.attack.model import create_attack_model, AttackModel
-from sralt.utils import setup_logging, timer, get_device, set_seed, DataLoader, EarlyStopping
+from sralt.attack.model import create_attack_model
+from sralt.utils import setup_logging, get_device, set_seed, DataLoader
 
 
 class TPRatFPR(Metric):
@@ -125,97 +123,6 @@ class AdamWithGradientClipping(optim.AdamW):
         super().step(closure)
 
 
-@torch.no_grad()
-def compute_binary_metrics(model: AttackModel, user_features: torch.Tensor, eval_loader: DataLoader, metrics: list[Metric]) -> list[float]:
-    """
-    Compute binary classification metrics.
-
-    :param model: The attack model.
-    :param user_features: The user features tensor of shape (num_users, user_feature_dim).
-    :param eval_loader: DataLoader for evaluation data.
-    :param metrics: A list of metric calculators.
-    :return: A list of computed metric values.
-    """
-    model.eval()
-
-    metrics = [metric.to(user_features.device) for metric in metrics]
-    for metric in metrics:
-        metric.reset()
-
-    for user1, user2, labels in eval_loader:
-        probs = model.predict(torch.stack([user1, user2]), user_features)
-
-        for metric in metrics:
-            metric.update(probs, labels)
-
-    return [typing.cast(torch.Tensor, metric.compute()).item() for metric in metrics]
-
-
-@timer()
-def train(
-    model: AttackModel, optimizer: optim.Optimizer, loss_fn: nn.Module,
-    user_features: torch.Tensor, train_loader: DataLoader, eval_loader: DataLoader,
-    num_epochs: int, early_stopping: EarlyStopping,
-    metrics: list[Metric], metrics_weights: list[float],
-    writer: SummaryWriter | None = None
-):
-    """
-    Train the attack model.
-
-    :param model: The attack model.
-    :param optimizer: The optimizer for training.
-    :param loss_fn: The loss function.
-    :param user_features: The user features tensor of shape (num_users, user_feature_dim).
-    :param train_loader: DataLoader for training data.
-    :param eval_loader: DataLoader for evaluation data.
-    :param num_epochs: The number of training epochs.
-    :param early_stopping: Early stopping mechanism.
-    :param metrics: A list of metric calculators.
-    :param metrics_weights: A list of weights for each metric to compute a weighted sum for early stopping.
-    :param writer: Optional TensorBoard SummaryWriter for logging.
-    """
-    metrics_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
-
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-
-        # Training steps
-        total_loss = 0.0
-        total_samples = 0
-
-        for user1, user2, labels in train_loader:
-            optimizer.zero_grad()
-
-            logits = model(torch.stack([user1, user2]), user_features)
-
-            labels: torch.Tensor
-            loss: torch.Tensor = loss_fn(logits, labels.float())
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item() * labels.size(0)
-            total_samples += labels.size(0)
-
-        average_loss = total_loss / total_samples
-        if writer is not None:
-            writer.add_scalar('Loss/train', average_loss, epoch)
-
-        # Evaluation
-        metrics_results = compute_binary_metrics(model, user_features, eval_loader, metrics)
-        metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
-        logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
-
-        if writer is not None:
-            for name, value in zip(metrics_names, metrics_results):
-                writer.add_scalar(f'{name}/val', value, epoch)
-
-        weighted_metric = sum([weight * value for weight, value in zip(metrics_weights, metrics_results)])
-        if early_stopping.step(weighted_metric):
-            break
-
-    early_stopping.load_best_state()
-
-
 def main():
     runs_path = 'runs/smia_attack_on_design_ciao_test'
     os.makedirs(runs_path, exist_ok=True)
@@ -301,9 +208,6 @@ def main():
         }
     ).to(device)
 
-    optimizer = AdamWithGradientClipping(attack_model.parameters(), lr=1e-3, weight_decay=1e-4, grad_clip_norm=5.0)
-    loss_fn = torch.nn.BCEWithLogitsLoss().to(device)
-    early_stopping = EarlyStopping(attack_model, patience=5, greater_is_better=True)
     metrics: list[Metric] = [
         AUROC(task='binary'),
         TPRatFPR(target_fpr=0.01),
@@ -313,16 +217,23 @@ def main():
     ]
     metrics_weights = [1.0, 1.0, 1.0, 0.0, 0.0]
 
-    train(
-        model=attack_model, optimizer=optimizer, loss_fn=loss_fn,
-        user_features=user_features, train_loader=train_loader, eval_loader=val_loader,
-        num_epochs=50, early_stopping=early_stopping,
-        metrics=metrics, metrics_weights=metrics_weights, writer=writer
+    test_metrics = attack_model.train_model(
+        user_features=user_features,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        num_epochs=100,
+        loss_fn=torch.nn.BCEWithLogitsLoss().to(device),
+        optimizer_cls=AdamWithGradientClipping,
+        optimizer_kwargs={'lr': 1e-3, 'weight_decay': 1e-4, 'grad_clip_norm': 5.0},
+        metrics=metrics,
+        metric_aggregator=lambda loss, metrics: sum(w * m for w, m in zip(metrics_weights, metrics)),
+        early_stopping_kwargs={'patience': 5, 'greater_is_better': True},
+        writer=writer
     )
 
-    final_metrics = compute_binary_metrics(attack_model, user_features, test_loader, metrics)
-    for metric, value in zip(metrics, final_metrics):
-        logging.info(f'Final {metric.__class__.__name__.removeprefix('Binary')}: {value:.4f}')
+    for name, value in test_metrics.items():
+        logging.info(f'Test {name}: {value:.4f}')
 
     torch.save(attack_model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()

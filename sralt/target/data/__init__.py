@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Any, Callable
 
 from .data import TargetData
 from .dataset import TrainTargetDataset, EvalTargetDataset
@@ -20,7 +20,7 @@ def register_dataset(name: str) -> Callable:
     return decorator
 
 
-def load_dataset(name: str, directory: str, config: dict[str, object]) -> TargetData:
+def load_dataset(name: str, directory: str, config: dict[str, Any]) -> TargetData:
     """
     Load a dataset by name and path.
 

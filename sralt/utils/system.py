@@ -3,7 +3,7 @@ import time
 import logging
 import hashlib
 import functools
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 import pynvml
@@ -56,7 +56,7 @@ def timer(log_format: str = 'Function {func.__name__} took {elapsed:.2f} seconds
     """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> object:
+        def wrapper(*args, **kwargs) -> Any:
             start = time.time()
             result = func(*args, **kwargs)
             end = time.time()
@@ -80,7 +80,7 @@ def disk_cache(cache_dir: str = 'cache') -> Callable:
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> object:
+        def wrapper(*args, **kwargs) -> Any:
             key_raw = (func.__name__, repr(args), repr(sorted(kwargs.items())))
             key_bytes = pickle.dumps(key_raw)
             key_hash = hashlib.md5(key_bytes).hexdigest()

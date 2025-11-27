@@ -1,9 +1,7 @@
 import os
 import pkgutil
 import importlib
-from typing import Callable
-
-import torch
+from typing import Any, Callable
 
 from .base import AttackModel
 
@@ -24,7 +22,7 @@ def register_attack_model(name: str) -> Callable:
     return decorator
 
 
-def create_attack_model(name: str, user_feature_dim: int, config: dict[str, object]) -> AttackModel:
+def create_attack_model(name: str, user_feature_dim: int, config: dict[str, Any]) -> AttackModel:
     """
     Create a attack model by name.
 
