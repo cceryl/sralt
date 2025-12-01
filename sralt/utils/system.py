@@ -6,7 +6,6 @@ import functools
 from typing import Any, Callable
 
 import torch
-import pynvml
 import pickle
 
 
@@ -18,32 +17,31 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.devi
     :param allow_cpu: Whether to allow using CPU if no suitable GPU is found.
     :return: The selected torch device.
     """
-    torch_devices = {torch.cuda.get_device_name(i): torch.device(f'cuda:{i}') for i in range(torch.cuda.device_count())}
+    if torch.cuda.is_initialized():
+        error_message = (
+            'CUDA has already been initialized. '
+            'Set CUDA_DEVICE_ORDER=PCI_BUS_ID before initializing CUDA, '
+            'or avoid initializing CUDA before calling get_device().'
+        )
+        assert os.environ.get('CUDA_DEVICE_ORDER', '') == 'PCI_BUS_ID', error_message
+    else:
+        os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 
-    try:
-        pynvml.nvmlInit()
-        handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(pynvml.nvmlDeviceGetCount())]
+    devices = [torch.device(f'cuda:{i}') for i in range(torch.cuda.device_count())]
 
-        if not allow_share:
-            handles = [handle for handle in handles if len(pynvml.nvmlDeviceGetComputeRunningProcesses(handle)) == 0]
+    if not allow_share:
+        devices = [device for device in devices if 'no processes are running' in torch.cuda.list_gpu_processes(device)]
 
-        handles.sort(key=lambda handle: pynvml.nvmlDeviceGetMemoryInfo(handle).free, reverse=True)
+    if devices:
+        device = max(devices, key=lambda device: torch.cuda.mem_get_info(device)[0])
+        logging.info(f'Using GPU: {torch.cuda.get_device_name(device)} (index {device.index}).')
+        return device
 
-        for handle in handles:
-            name = pynvml.nvmlDeviceGetName(handle)
-            if name in torch_devices:
-                device = torch_devices[name]
-                logging.info(f'Using GPU: {name} (index {device.index}).')
-                return device
+    if allow_cpu:
+        logging.warning('No available GPU found. Using CPU.')
+        return torch.device('cpu')
 
-        if allow_cpu:
-            logging.warning('No available GPU found. Using CPU.')
-            return torch.device('cpu')
-
-        raise RuntimeError('No available GPU found.')
-
-    finally:
-        pynvml.nvmlShutdown()
+    raise RuntimeError('No available GPU found.')
 
 
 def timer(log_format: str = 'Function {func.__name__} took {elapsed:.2f} seconds.') -> Callable:

@@ -5,6 +5,7 @@ import logging
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import numpy as np
 
 
@@ -35,15 +36,17 @@ class EarlyStopping:
     Early stopping utility to stop training when metric does not improve.
     """
 
-    def __init__(self, model: nn.Module, patience: int, greater_is_better: bool = False):
+    def __init__(self, model: nn.Module, patience: int, greater_is_better: bool = False, epsilon: float = 1e-5):
         """
         :param model: The model being trained.
         :param patience: Number of epochs to wait for improvement before stopping.
         :param greater_is_better: If True, higher metric values are better (e.g., accuracy).
+        :param epsilon: Minimum change in the monitored metric to qualify as an improvement.
         """
         self.model = model
         self.patience = patience
         self.greater_is_better = greater_is_better
+        self.epsilon = epsilon
 
         self.counter = 0
         self.best_metric = -float('inf') if greater_is_better else float('inf')
@@ -56,7 +59,7 @@ class EarlyStopping:
         :param metric: The current validation metric (e.g., loss or accuracy).
         :return: True if training should be stopped, False otherwise.
         """
-        if (self.greater_is_better and metric > self.best_metric) or (not self.greater_is_better and metric < self.best_metric):
+        if self.greater_is_better == (metric > self.best_metric + self.epsilon):
             self.counter = 0
             self.best_metric = metric
             self.best_state = copy.deepcopy(self.model.state_dict())
@@ -87,3 +90,28 @@ class EarlyStopping:
         self.best_metric = -float('inf') if self.greater_is_better else float('inf')
         self.best_state = copy.deepcopy(self.model.state_dict())
         logging.info('Early stopping state is reset.')
+
+
+class AdamWithGradientClipping(optim.AdamW):
+    """
+    AdamW optimizer with gradient clipping.
+    """
+
+    def __init__(self, params, lr: float = 1e-3, weight_decay: float = 0.0, grad_clip_norm: float = 1.0):
+        """
+        Initialize the AdamWithGradientClipping optimizer.
+
+        :param params: Parameters to optimize.
+        :param lr: Learning rate.
+        :param weight_decay: Weight decay (L2 regularization).
+        :param grad_clip_norm: Maximum norm for gradient clipping.
+        """
+        super().__init__(params, lr=lr, weight_decay=weight_decay)
+        self.grad_clip_norm = grad_clip_norm
+
+    def step(self, closure=None):
+        """
+        Perform a single optimization step with gradient clipping.
+        """
+        torch.nn.utils.clip_grad_norm_(self.param_groups[0]['params'], self.grad_clip_norm)
+        super().step(closure)

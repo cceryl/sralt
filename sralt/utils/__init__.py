@@ -1,13 +1,15 @@
 from .data import leave_one_out_split, DataLoader
 from .log import setup_logging
-from .model import calculate_model_fingerprint
+from .metric import TPRatFPR
+from .model import calculate_model_fingerprint, build_sparse_adj
 from .system import get_device, timer, disk_cache
-from .train import set_seed, EarlyStopping
+from .train import set_seed, EarlyStopping, AdamWithGradientClipping
 
 __all__ = [
     'leave_one_out_split', 'DataLoader',
     'setup_logging',
-    'calculate_model_fingerprint',
+    'TPRatFPR',
+    'calculate_model_fingerprint', 'build_sparse_adj',
     'get_device', 'timer', 'disk_cache',
-    'set_seed', 'EarlyStopping',
+    'set_seed', 'EarlyStopping', 'AdamWithGradientClipping'
 ]
