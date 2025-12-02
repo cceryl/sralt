@@ -85,13 +85,13 @@ class DESIGN(TargetModel):
         ) / batch_size
 
         # Distillation loss
-        log_probs = F.log_softmax(diff_scores, dim=0)
-        distill_loss = torch.scalar_tensor(0.0, device=nodes.device)
+        pos_probs = F.sigmoid(pos_scores)
+        neg_probs = F.sigmoid(neg_scores)
+        distill_loss = torch.tensor(0.0, device=nodes.device)
 
         for teacher, student in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]:
-            teacher_log_probs = log_probs[:, teacher].detach()
-            student_log_probs = log_probs[:, student]
-            distill_loss += F.kl_div(student_log_probs, teacher_log_probs, reduction='batchmean', log_target=True)
+            distill_loss += F.binary_cross_entropy(pos_probs[:, student], pos_probs[:, teacher].detach())
+            distill_loss += F.binary_cross_entropy(neg_probs[:, student], neg_probs[:, teacher].detach())
 
         return rank_loss + self.decay * reg_loss + self.distill_weight * distill_loss
 
