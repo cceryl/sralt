@@ -1,12 +1,16 @@
 import os
 import time
+import typing
 import logging
 import hashlib
 import functools
+from uuid import UUID
 from typing import Any, Callable
 
 import torch
+import pynvml
 import pickle
+from cuda import cuda
 
 
 def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.device:
@@ -17,31 +21,56 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.devi
     :param allow_cpu: Whether to allow using CPU if no suitable GPU is found.
     :return: The selected torch device.
     """
-    if torch.cuda.is_initialized():
-        error_message = (
-            'CUDA has already been initialized. '
-            'Set CUDA_DEVICE_ORDER=PCI_BUS_ID before initializing CUDA, '
-            'or avoid initializing CUDA before calling get_device().'
-        )
-        assert os.environ.get('CUDA_DEVICE_ORDER', '') == 'PCI_BUS_ID', error_message
-    else:
-        os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+    @typing.no_type_check
+    def safe_cuda_call(func: Callable, *args, **kwargs):
+        code, result = func(*args, **kwargs)
+        if code != cuda.CUresult.CUDA_SUCCESS:
+            raise RuntimeError(f'CUDA error code: {code}')
+        return result
 
-    devices = [torch.device(f'cuda:{i}') for i in range(torch.cuda.device_count())]
+    @typing.no_type_check
+    def get_uuid_to_cuda_id() -> dict[str, int]:
+        cuda.cuInit(0)
+        uuid_to_cuda_id: dict[str, int] = {}
 
-    if not allow_share:
-        devices = [device for device in devices if 'no processes are running' in torch.cuda.list_gpu_processes(device)]
+        for cuda_id in range(safe_cuda_call(cuda.cuDeviceGetCount)):
+            device = safe_cuda_call(cuda.cuDeviceGet, cuda_id)
+            uuid_bytes = safe_cuda_call(cuda.cuDeviceGetUuid, device)
+            uuid_str = 'GPU-' + str(UUID(bytes=uuid_bytes.bytes))
+            uuid_to_cuda_id[uuid_str] = cuda_id
 
-    if devices:
-        device = max(devices, key=lambda device: torch.cuda.mem_get_info(device)[0])
-        logging.info(f'Using GPU: {torch.cuda.get_device_name(device)} (index {device.index}).')
-        return device
+        return uuid_to_cuda_id
 
-    if allow_cpu:
-        logging.warning('No available GPU found. Using CPU.')
-        return torch.device('cpu')
+    try:
+        pynvml.nvmlInit()
 
-    raise RuntimeError('No available GPU found.')
+        handles = [pynvml.nvmlDeviceGetHandleByIndex(physical_id) for physical_id in range(pynvml.nvmlDeviceGetCount())]
+        uuid_to_cuda_id = get_uuid_to_cuda_id()
+        uuid_to_handle = {pynvml.nvmlDeviceGetUUID(handle): handle for handle in handles}
+
+        uuids = list(uuid_to_handle.keys())
+        uuids.sort(key=lambda u: pynvml.nvmlDeviceGetMemoryInfo(uuid_to_handle[u]).free, reverse=True)
+
+        if not allow_share:
+            uuids = [uuid for uuid in uuids if pynvml.nvmlDeviceGetComputeRunningProcesses(uuid_to_handle[uuid]) == []]
+
+        for uuid in uuids:
+            if uuid not in uuid_to_cuda_id:
+                continue
+
+            cuda_id = uuid_to_cuda_id[uuid]
+            device = torch.device(f'cuda:{cuda_id}')
+            logging.info(f'Using GPU: {torch.cuda.get_device_name(device)} (index {device.index}).')
+            return device
+
+        if allow_cpu:
+            logging.warning('No available GPU found. Using CPU.')
+            return torch.device('cpu')
+
+        raise RuntimeError('No available GPU found.')
+
+    finally:
+        pynvml.nvmlShutdown()
 
 
 def timer(log_format: str = 'Function {func.__name__} took {elapsed:.2f} seconds.') -> Callable:
