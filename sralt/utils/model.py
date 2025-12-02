@@ -1,7 +1,10 @@
+import typing
 import hashlib
 
 import torch
 import torch.nn as nn
+from torch_geometric.utils import degree, add_self_loops as add_self_loops_fn
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 
 def calculate_model_fingerprint(model: nn.Module) -> str:
@@ -22,19 +25,56 @@ def calculate_model_fingerprint(model: nn.Module) -> str:
     return hasher.hexdigest()
 
 
-def build_sparse_adj(edge_index: torch.Tensor, num_nodes: int) -> torch.sparse.Tensor:
+def build_normalized_adj(
+    edge_index: torch.Tensor,
+    num_nodes: int,
+    edge_weight: torch.Tensor | None = None,
+    add_self_loops: bool = False,
+    normalization: typing.Literal['none', 'symmetric', 'source', 'target'] = 'symmetric'
+) -> torch.sparse.Tensor:
     """
-    Build a sparse adjacency matrix for mean aggregation.
+    Build a normalized CSR adjacency matrix from the given edge index.
 
-    :param edge_index: Tensor of shape (2, num_edges).
+    :param edge_index: Undirected edge index tensor of shape (2, num_edges).
     :param num_nodes: Total number of nodes.
-    :return: Sparse adjacency matrix of shape (num_nodes, num_nodes).
+    :param edge_weight: Optional edge weights tensor of shape (num_edges,).
+    :param add_self_loops: Whether to add self-loops to the adjacency matrix.
+    :param normalization: Type of normalization to apply ('none', 'symmetric', 'source', 'target').
+    :return: Normalized adjacency matrix as a CSR sparse tensor.
     """
+    if add_self_loops:
+        edge_index, edge_weight = add_self_loops_fn(edge_index, edge_weight, fill_value=1.0, num_nodes=num_nodes)
+
+    if edge_weight is None:
+        edge_weight = torch.ones(edge_index.size(1), device=edge_index.device)
+
+    match normalization:
+        case 'none':
+            pass
+
+        case 'symmetric':
+            edge_index, edge_weight = typing.cast(
+                tuple[torch.Tensor, torch.Tensor],
+                gcn_norm(edge_index, edge_weight, num_nodes, add_self_loops=False)
+            )
+
+        case 'source':
+            src, dst = edge_index
+            deg = degree(src, num_nodes=num_nodes)
+            deg_inv = deg.clamp(min=1).pow(-1)
+            edge_weight = deg_inv[src] * edge_weight
+
+        case 'target':
+            src, dst = edge_index
+            deg = degree(dst, num_nodes=num_nodes)
+            deg_inv = deg.clamp(min=1).pow(-1)
+            edge_weight = edge_weight * deg_inv[dst]
+
     src, dst = edge_index
-    deg = torch.bincount(dst, minlength=num_nodes).float()
-    deg_inv = 1.0 / deg.clamp(min=1)
-    weights = deg_inv[dst]
+    row, col = dst, src
 
     return torch.sparse_coo_tensor(
-        torch.stack([dst, src]), weights, (num_nodes, num_nodes)
+        indices=torch.stack([row, col]),
+        values=edge_weight,
+        size=(num_nodes, num_nodes)
     ).coalesce().to_sparse_csr()

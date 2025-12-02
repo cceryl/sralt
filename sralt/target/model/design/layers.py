@@ -2,20 +2,7 @@ import torch
 import torch.nn as nn
 
 
-def build_sparse_adj(edge_index: torch.Tensor, num_nodes: int) -> torch.sparse.Tensor:
-    """
-    Build a sparse adjacency matrix for mean aggregation.
-
-    :param edge_index: Tensor of shape (2, num_edges).
-    :param num_nodes: Total number of nodes.
-    :return: Sparse adjacency matrix of shape (num_nodes, num_nodes).
-    """
-    src, dst = edge_index
-    deg = torch.bincount(dst, minlength=num_nodes).float()
-    deg_inv = 1.0 / deg.clamp(min=1)
-    weights = deg_inv[dst]
-
-    return torch.sparse_coo_tensor(torch.stack([dst, src]), weights, (num_nodes, num_nodes)).coalesce()
+from sralt.utils import build_normalized_adj
 
 
 class SocialConv(nn.Module):
@@ -26,8 +13,8 @@ class SocialConv(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.cached_edge_index = None
-        self.cached_sparse_adj = None
+        self.cached_edge_index = torch.Tensor()
+        self.cached_sparse_adj = torch.Tensor()
 
     def forward(self, edge_index: torch.Tensor, embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -38,9 +25,15 @@ class SocialConv(nn.Module):
         """
         num_users = embeds.size(0)
 
-        if self.cached_edge_index is None or self.cached_edge_index is not edge_index:
+        if self.cached_edge_index is not edge_index:
             self.cached_edge_index = edge_index
-            self.cached_sparse_adj = build_sparse_adj(edge_index, num_users)
+            self.cached_sparse_adj = build_normalized_adj(
+                edge_index=edge_index,
+                num_nodes=num_users,
+                edge_weight=None,
+                add_self_loops=False,
+                normalization='target'
+            )
 
         return self.cached_sparse_adj @ embeds
 
@@ -53,8 +46,8 @@ class RatingConv(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.cached_edge_index = None
-        self.cached_sparse_adj = None
+        self.cached_edge_index = torch.Tensor()
+        self.cached_sparse_adj = torch.Tensor()
 
     def forward(self, edge_index: torch.Tensor, embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -66,9 +59,15 @@ class RatingConv(nn.Module):
         """
         num_nodes = embeds.size(0)
 
-        if self.cached_edge_index is None or self.cached_edge_index is not edge_index:
+        if self.cached_edge_index is not edge_index:
             self.cached_edge_index = edge_index
-            self.cached_sparse_adj = build_sparse_adj(edge_index, num_nodes)
+            self.cached_sparse_adj = build_normalized_adj(
+                edge_index=edge_index,
+                num_nodes=num_nodes,
+                edge_weight=None,
+                add_self_loops=False,
+                normalization='target'
+            )
 
         aggregated = self.cached_sparse_adj @ embeds
         embeds = aggregated + embeds
