@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 from torch.utils.data import Dataset
 from torch_geometric.utils import to_undirected, negative_sampling
@@ -65,15 +67,13 @@ class EvalAttackDataset(Dataset):
     Dataset for evaluating social connection attacks.
     """
 
-    def __init__(self, attack_data: AttackData, split: str = 'val'):
+    def __init__(self, attack_data: AttackData, split: Literal['val', 'test'] = 'val'):
         """
         Initialize the evaluation attack dataset.
 
         :param attack_data: The attack data containing social graph edges.
         :param split: The data split to use ('val' or 'test').
         """
-        assert split in ['val', 'test'], "Split must be either 'val' or 'test'."
-
         self.attack_data = attack_data
         self.split = split
 

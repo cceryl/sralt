@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from typing import Literal
 
 import torch
 import numpy as np
@@ -7,9 +7,9 @@ from torch.utils.data import Dataset
 from .data import TargetData
 
 
-class BaseTargetDataset(Dataset, ABC):
+class TrainTargetDataset(Dataset):
     """
-    Base dataset class for target social recommendation models.
+    Dataset class for training data in target social recommendation models.
     """
 
     def __init__(self, data: TargetData):
@@ -20,7 +20,7 @@ class BaseTargetDataset(Dataset, ABC):
         """
         self.data = data
 
-        self.users, self.positive_items = self.get_positive_edge_index()
+        self.users, self.positive_items = self.data.behavioral_train_edge_index
         self.negative_items: torch.Tensor = torch.tensor([])
 
         self.access_counter = 0
@@ -30,7 +30,7 @@ class BaseTargetDataset(Dataset, ABC):
         Retrieves the data sample at the specified index.
 
         :param index: The index of the sample to retrieve.
-        :return: A tuple of (user, positive_item, negative_item) at the specified index.
+        :return: A tuple of (user, positive_item, negative_item) at the specified index, all tensors are scalar.
         """
         if self.access_counter == 0:
             self.negative_items = self.sample_negative_items()
@@ -46,38 +46,6 @@ class BaseTargetDataset(Dataset, ABC):
         :return: The length of the dataset.
         """
         return self.users.size(0)
-
-    @abstractmethod
-    def get_positive_edge_index(self) -> torch.Tensor:
-        """
-        Retrieves the positive user-item edge indices.
-
-        :return: An user-item edge index tensor of shape (2, num_edges).
-        """
-        pass
-
-    @abstractmethod
-    def sample_negative_items(self) -> torch.Tensor:
-        """
-        Samples negative items for each user in the dataset.
-
-        :return: A tensor containing negative item samples for each user.
-        """
-        pass
-
-
-class TrainTargetDataset(BaseTargetDataset):
-    """
-    Dataset class for training data in target social recommendation models.
-    """
-
-    def get_positive_edge_index(self) -> torch.Tensor:
-        """
-        Retrieves the positive user-item edge indices from the training data.
-
-        :return: An user-item edge index tensor of shape (2, num_edges).
-        """
-        return self.data.behavioral_train_edge_index
 
     def sample_negative_items(self) -> torch.Tensor:
         """
@@ -109,25 +77,16 @@ class TrainTargetDataset(BaseTargetDataset):
 
         return neg_items.to(self.data.device)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Retrieves the data sample at the specified index.
-
-        :param index: The index of the sample to retrieve.
-        :return: A tuple of (user, positive_item, negative_item) at the specified index, all tensors are scalar.
-        """
-        return super().__getitem__(index)
-
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(data={self.data})'
 
 
-class EvalTargetDataset(BaseTargetDataset):
+class EvalTargetDataset(Dataset):
     """
     Dataset class for evaluation data in target social recommendation models.
     """
 
-    def __init__(self, data: TargetData, split: str = 'val', num_negative_samples: int = 999):
+    def __init__(self, data: TargetData, split: Literal['val', 'test'] = 'val', num_negative_samples: int = 999):
         """
         Initializes the evaluation dataset with the provided data object and number of negative samples.
 
@@ -135,11 +94,30 @@ class EvalTargetDataset(BaseTargetDataset):
         :param split: The data split to use ('val' or 'test').
         :param num_negative_samples: The number of negative samples to generate for each positive interaction.
         """
-        assert split in ['val', 'test'], 'split must be either "val" or "test"'
+        self.data = data
         self.split = split
         self.num_negative_samples = num_negative_samples
 
-        super().__init__(data)
+        self.users, self.positive_items = self.get_positive_edge_index()
+        self.negative_items = self.sample_negative_items()
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Retrieves the data sample at the specified index.
+
+        :param index: The index of the sample to retrieve.
+        :return: A tuple of (user, positive_item, negative_items) at the specified index, where negative_items is of shape
+                 (num_negative_samples,) and the others are scalars.
+        """
+        return self.users[index], self.positive_items[index], self.negative_items[index]
+
+    def __len__(self) -> int:
+        """
+        Returns the total number of samples in the dataset.
+
+        :return: The length of the dataset.
+        """
+        return self.users.size(0)
 
     def get_positive_edge_index(self) -> torch.Tensor:
         """
@@ -185,16 +163,6 @@ class EvalTargetDataset(BaseTargetDataset):
             conflicts = conflicts[conflict_mask]
 
         return neg_items.view(num_edges, self.num_negative_samples).to(self.data.device)
-
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Retrieves the data sample at the specified index.
-
-        :param index: The index of the sample to retrieve.
-        :return: A tuple of (user, positive_item, negative_items) at the specified index, where negative_items is of shape
-                 (num_negative_samples,) and the others are scalars.
-        """
-        return super().__getitem__(index)
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(data={self.data}, split={self.split}, num_negative_samples={self.num_negative_samples})'
