@@ -3,6 +3,7 @@ import logging
 
 import torch
 import scipy.io
+import numpy as np
 from numpy.typing import NDArray
 from torch_geometric.utils import to_undirected, coalesce
 
@@ -40,8 +41,10 @@ class CiaoData(TargetData):
 
         # Rows of (user_id, user_id)
         social_mat: NDArray = scipy.io.loadmat(os.path.join(directory, 'trustnetwork.mat'))['trustnetwork']
+        social_mat = social_mat.astype(np.int64)
         # Rows of (user_id, item_id, category_id, rating, helpfulness)
         rating_mat: NDArray = scipy.io.loadmat(os.path.join(directory, 'rating.mat'))['rating']
+        rating_mat = rating_mat.astype(np.int64)
 
         # Filter bad interactions and convert to edge indices
         social_data = torch.from_numpy(social_mat).long()
@@ -119,7 +122,7 @@ class CiaoData(TargetData):
 
     def __repr__(self) -> str:
         return (
-            f'CiaoData('
+            f'{self.__class__.__name__}('
             f'directory={self.directory}, '
             f'min_rating={self.min_rating}, '
             f'min_social_connections={self.min_social_connections}, '

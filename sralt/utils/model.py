@@ -1,28 +1,12 @@
 import typing
 import hashlib
+from typing import Literal
 
 import torch
 import torch.nn as nn
+from numpy.typing import NDArray
 from torch_geometric.utils import degree, add_self_loops as add_self_loops_fn
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
-
-
-def calculate_model_fingerprint(model: nn.Module) -> str:
-    """
-    Calculate a fingerprint for the given model based on its parameters.
-
-    :param model: The PyTorch model.
-    :return: The hexadecimal fingerprint string.
-    """
-    hasher = hashlib.md5()
-    hasher.update(str(model.__class__).encode())
-
-    for name, param in model.state_dict().items():
-        param: torch.Tensor
-        hasher.update(name.encode('utf-8'))
-        hasher.update(param.detach().cpu().numpy().tobytes())
-
-    return hasher.hexdigest()
 
 
 def build_normalized_adj(
@@ -30,7 +14,7 @@ def build_normalized_adj(
     num_nodes: int,
     edge_weight: torch.Tensor | None = None,
     add_self_loops: bool = False,
-    normalization: typing.Literal['none', 'symmetric', 'source', 'target'] = 'symmetric'
+    normalization: Literal['none', 'symmetric', 'source', 'target'] = 'symmetric'
 ) -> torch.sparse.Tensor:
     """
     Build a normalized CSR adjacency matrix from the given edge index.
@@ -78,3 +62,35 @@ def build_normalized_adj(
         values=edge_weight,
         size=(num_nodes, num_nodes)
     ).coalesce().to_sparse_csr()
+
+
+def calculate_tensor_fingerprint(tensor: torch.Tensor) -> str:
+    """
+    Calculate a fingerprint for the given tensor.
+
+    :param tensor: The PyTorch tensor.
+    :return: The hexadecimal fingerprint string.
+    """
+    hasher = hashlib.md5()
+    hasher.update(str(tensor.shape).encode())
+    hasher.update(str(tensor.dtype).encode())
+    hasher.update(typing.cast(NDArray, tensor.detach().cpu().numpy()).tobytes())
+    return hasher.hexdigest()
+
+
+def calculate_model_fingerprint(model: nn.Module) -> str:
+    """
+    Calculate a fingerprint for the given model based on its parameters.
+
+    :param model: The PyTorch model.
+    :return: The hexadecimal fingerprint string.
+    """
+    hasher = hashlib.md5()
+    hasher.update(str(model.__class__).encode())
+
+    for name, param in model.state_dict().items():
+        param: torch.Tensor
+        hasher.update(name.encode('utf-8'))
+        hasher.update(typing.cast(NDArray, param.detach().cpu().numpy()).tobytes())
+
+    return hasher.hexdigest()

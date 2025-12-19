@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch_geometric.utils import scatter
 
 
 from sralt.utils import build_normalized_adj
@@ -13,8 +14,8 @@ class SocialConv(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.cached_edge_index = torch.Tensor()
-        self.cached_sparse_adj = torch.Tensor()
+        self._cached_edge_index = torch.Tensor()
+        self._cached_sparse_adj = torch.Tensor()
 
     def forward(self, edge_index: torch.Tensor, embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -25,9 +26,13 @@ class SocialConv(nn.Module):
         """
         num_users = embeds.size(0)
 
-        if self.cached_edge_index is not edge_index:
-            self.cached_edge_index = edge_index
-            self.cached_sparse_adj = build_normalized_adj(
+        if torch.are_deterministic_algorithms_enabled():
+            src, dst = edge_index
+            return scatter(embeds[src], dst, dim_size=num_users, reduce='mean')
+
+        if self._cached_edge_index is not edge_index:
+            self._cached_edge_index = edge_index
+            self._cached_sparse_adj = build_normalized_adj(
                 edge_index=edge_index,
                 num_nodes=num_users,
                 edge_weight=None,
@@ -35,7 +40,7 @@ class SocialConv(nn.Module):
                 normalization='target'
             )
 
-        return self.cached_sparse_adj @ embeds
+        return self._cached_sparse_adj @ embeds
 
 
 class RatingConv(nn.Module):
@@ -46,8 +51,8 @@ class RatingConv(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.cached_edge_index = torch.Tensor()
-        self.cached_sparse_adj = torch.Tensor()
+        self._cached_edge_index = torch.Tensor()
+        self._cached_sparse_adj = torch.Tensor()
 
     def forward(self, edge_index: torch.Tensor, embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -59,9 +64,20 @@ class RatingConv(nn.Module):
         """
         num_nodes = embeds.size(0)
 
-        if self.cached_edge_index is not edge_index:
-            self.cached_edge_index = edge_index
-            self.cached_sparse_adj = build_normalized_adj(
+        if torch.are_deterministic_algorithms_enabled():
+            src, dst = edge_index
+
+            aggregated = scatter(embeds[src], dst, dim_size=num_nodes, reduce='mean')
+            embeds = aggregated + embeds
+
+            aggregated = scatter(embeds[src], dst, dim_size=num_nodes, reduce='mean')
+            embeds = aggregated + embeds
+
+            return embeds
+
+        if self._cached_edge_index is not edge_index:
+            self._cached_edge_index = edge_index
+            self._cached_sparse_adj = build_normalized_adj(
                 edge_index=edge_index,
                 num_nodes=num_nodes,
                 edge_weight=None,
@@ -69,10 +85,10 @@ class RatingConv(nn.Module):
                 normalization='target'
             )
 
-        aggregated = self.cached_sparse_adj @ embeds
+        aggregated = self._cached_sparse_adj @ embeds
         embeds = aggregated + embeds
 
-        aggregated = self.cached_sparse_adj @ embeds
+        aggregated = self._cached_sparse_adj @ embeds
         embeds = aggregated + embeds
 
         return embeds

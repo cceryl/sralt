@@ -22,6 +22,7 @@ class TrainAttackDataset(Dataset):
 
         self.pos_edge_index = attack_data.train_social_edge_index
         self.neg_edge_index = torch.tensor([], device=attack_data.device)
+
         self.edge_index = torch.tensor([], device=attack_data.device)
         self.labels = torch.cat(
             [torch.ones(self.pos_edge_index.size(1)), torch.zeros(self.pos_edge_index.size(1))]
@@ -59,7 +60,7 @@ class TrainAttackDataset(Dataset):
         return self.edge_index[0, idx], self.edge_index[1, idx], self.labels[idx]
 
     def __repr__(self) -> str:
-        return f'TrainAttackDataset(attack_data={repr(self.attack_data)})'
+        return f'{self.__class__.__name__}(attack_data={repr(self.attack_data)})'
 
 
 class EvalAttackDataset(Dataset):
@@ -77,17 +78,18 @@ class EvalAttackDataset(Dataset):
         self.attack_data = attack_data
         self.split = split
 
-        self.pos_edge_index = attack_data.val_social_edge_index if split == 'val' else attack_data.test_social_edge_index
-        self.neg_edge_index = negative_sampling(
+        pos_edge_index = attack_data.val_social_edge_index if split == 'val' else attack_data.test_social_edge_index
+        neg_edge_index = negative_sampling(
             edge_index=attack_data.shadow_social_edge_index if split == 'val' else attack_data.target_social_edge_index,
             num_nodes=attack_data.num_users,
-            num_neg_samples=self.pos_edge_index.size(1),
+            num_neg_samples=pos_edge_index.size(1),
             method='dense',
             force_undirected=False
         )
-        self.edge_index = torch.cat([self.pos_edge_index, self.neg_edge_index], dim=1)
+
+        self.edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=1)
         self.labels = torch.cat(
-            [torch.ones(self.pos_edge_index.size(1)), torch.zeros(self.neg_edge_index.size(1))]
+            [torch.ones(pos_edge_index.size(1)), torch.zeros(neg_edge_index.size(1))]
         ).long().to(attack_data.device)
 
     def __len__(self) -> int:
@@ -96,7 +98,7 @@ class EvalAttackDataset(Dataset):
 
         :return: The length of the dataset.
         """
-        return self.pos_edge_index.size(1) * 2
+        return self.edge_index.size(1)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -108,4 +110,4 @@ class EvalAttackDataset(Dataset):
         return self.edge_index[0, idx], self.edge_index[1, idx], self.labels[idx]
 
     def __repr__(self) -> str:
-        return f'EvalAttackDataset(attack_data={repr(self.attack_data)}, split={self.split})'
+        return f'{self.__class__.__name__}(attack_data={repr(self.attack_data)}, split={self.split})'

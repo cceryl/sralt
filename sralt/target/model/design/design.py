@@ -1,11 +1,24 @@
+import types
+import typing
+import logging
+from tqdm import tqdm
+from typing import Any, Callable
+
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+from torch_geometric.utils import to_undirected
+from torch_geometric.metrics.link_pred import LinkPredMetric
 
 from .twin import TwinGCN
 from .social import SocialGCN
 from .rating import RatingGCN
 from sralt.target.model import register_target_model, TargetModel
-from sralt.utils import calculate_model_fingerprint
+from sralt.target.data import TargetData, TrainTargetDataset, EvalTargetDataset
+from sralt.utils import timer, calculate_model_fingerprint, compute_recommendation_metrics, recommend_items
+from sralt.utils import DataLoader, EarlyStopping
 
 
 @register_target_model('DESIGN')
@@ -17,7 +30,7 @@ class DESIGN(TargetModel):
     def __init__(
         self, num_users: int, num_items: int, embed_dim: int,
         user_fusion_layers: list[int], item_fusion_layers: list[int],
-        decay: float = 1e-4, distill_weight: float = 1.0
+        decay: float, distill_weight: float
     ):
         """
         :param num_users: Total number of users.
@@ -72,32 +85,182 @@ class DESIGN(TargetModel):
         :param nodes: Node indices tensor of shape (3 * num_samples,).
         :return: Computed loss tensor.
         """
+        sigmoid = nn.Sigmoid()
+        logsigmoid = nn.LogSigmoid()
+
+        loss = torch.tensor(0.0, device=nodes.device)
+        batch_size = pos_scores.size(0)
+
         # BPR loss
         diff_scores = pos_scores - neg_scores
-        rank_loss = -F.logsigmoid(diff_scores).mean()
+        rank_loss = -typing.cast(torch.Tensor, logsigmoid(diff_scores)).mean()
+        loss += rank_loss
 
         # L2 regularization
-        batch_size = pos_scores.size(0)
-        reg_loss = (
-            self.social.embeds.weight[nodes].norm(2).pow(2) +
-            self.rating.embeds.weight[nodes].norm(2).pow(2) +
-            self.twin.embeds.weight[nodes].norm(2).pow(2)
-        ) / batch_size
+        if self.decay != 0.0:
+            reg_loss = (
+                self.social.embeds.weight[nodes].pow(2).sum() +
+                self.rating.embeds.weight[nodes].pow(2).sum() +
+                self.twin.embeds.weight[nodes].pow(2).sum()
+            ) / batch_size
+
+            loss += self.decay * reg_loss
 
         # Distillation loss
-        pos_probs = F.sigmoid(pos_scores)
-        neg_probs = F.sigmoid(neg_scores)
-        distill_loss = torch.tensor(0.0, device=nodes.device)
+        if self.distill_weight != 0.0:
+            pos_probs: torch.Tensor = sigmoid(pos_scores)
+            neg_probs: torch.Tensor = sigmoid(neg_scores)
+            distill_loss = torch.tensor(0.0, device=nodes.device)
 
-        for teacher, student in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]:
-            distill_loss += F.binary_cross_entropy(pos_probs[:, student], pos_probs[:, teacher].detach())
-            distill_loss += F.binary_cross_entropy(neg_probs[:, student], neg_probs[:, teacher].detach())
+            for teacher, student in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]:
+                distill_loss += F.binary_cross_entropy(pos_probs[:, student], pos_probs[:, teacher].detach())
+                distill_loss += F.binary_cross_entropy(neg_probs[:, student], neg_probs[:, teacher].detach())
 
-        return rank_loss + self.decay * reg_loss + self.distill_weight * distill_loss
+            loss += self.distill_weight * distill_loss / 6.0
+
+        return loss
+
+    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
+    def train_model(
+        self, *, data: TargetData, writer: SummaryWriter | None,
+        train_batch_size: int, val_batch_size: int, val_num_negatives: int,
+        num_epochs: int, optimizer_cls: type[optim.Optimizer], optimizer_kwargs: dict[str, Any],
+        metrics: list[LinkPredMetric], metric_aggregator: types.CodeType, early_stopping_kwargs: dict[str, Any],
+        **kwargs
+    ):
+        """
+        Train the DESIGN model.
+
+        :param data: The target dataset.
+        :param writer: Optional TensorBoard writer for logging.
+        :param train_batch_size: Batch size for training.
+        :param val_batch_size: Batch size for validation.
+        :param val_num_negatives: Number of negative samples per positive sample during validation.
+        :param num_epochs: Maximum number of training epochs.
+        :param optimizer_cls: Optimizer class to use.
+        :param optimizer_kwargs: Keyword arguments for the optimizer.
+        :param metrics: List of link prediction metrics to evaluate.
+        :param metric_aggregator: Source code of a Callable[[float, list[float]], float] that aggregates loss and metrics.
+        :param early_stopping_kwargs: Keyword arguments for the EarlyStopping helper.
+        """
+        undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
+        train_dataset = TrainTargetDataset(data)
+        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
+        val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+
+        optimizer = optimizer_cls(self.parameters(), **optimizer_kwargs)
+        early_stopping = EarlyStopping(self, **early_stopping_kwargs)
+        metric_aggregator_fn: Callable[[float, list[float]], float] = eval(metric_aggregator)
+
+        model_name = self.__class__.__name__
+        metrics_names = [
+            f'{typing.cast(str, metric.__class__.__name__).removeprefix("LinkPred")}@{metric.k}'
+            for metric in metrics
+        ]
+
+        for epoch in range(1, num_epochs + 1):
+            self.train()
+
+            total_loss = 0.0
+            total_samples = 0
+
+            for users, pos_items, neg_items in tqdm(train_loader, desc=f'Epoch {epoch}/{num_epochs}'):
+                users: torch.Tensor
+                optimizer.zero_grad()
+
+                pos_edges = torch.stack([users, pos_items], dim=0)
+                neg_edges = torch.stack([users, neg_items], dim=0)
+                node_ids = torch.cat([users, pos_items, neg_items])
+
+                pos_scores: torch.Tensor = self(data.social_edge_index, undirected_behavioral_edge_index, pos_edges)
+                neg_scores: torch.Tensor = self(data.social_edge_index, undirected_behavioral_edge_index, neg_edges)
+
+                loss = self.calculate_loss(pos_scores, neg_scores, node_ids)
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item() * users.size(0)
+                total_samples += users.size(0)
+
+            average_loss = total_loss / total_samples if total_samples > 0 else float('nan')
+            if writer is not None:
+                writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
+
+            self.eval()
+            metrics_results = compute_recommendation_metrics(
+                embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
+                metrics=metrics,
+                eval_loader=val_loader
+            )
+            metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
+            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
+
+            if writer is not None:
+                for name, value in zip(metrics_names, metrics_results):
+                    writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
+
+            aggregated_metric = metric_aggregator_fn(average_loss, metrics_results)
+            if early_stopping.step(aggregated_metric):
+                break
+
+        early_stopping.load_best_state()
+
+    @torch.no_grad()
+    def test_model(
+        self, *, data: TargetData, metrics: list[LinkPredMetric],
+        test_batch_size: int, test_num_negatives: int, **kwargs
+    ) -> list[float]:
+        """
+        Test the DESIGN model.
+
+        :param data: The target dataset.
+        :param metrics: A list of link prediction metrics to compute.
+        :param writer: Optional TensorBoard writer for logging.
+        :param test_batch_size: Batch size for testing.
+        :param test_num_negatives: Number of negative samples per positive sample during testing.
+        :return: A list of metric values.
+        """
+        self.eval()
+
+        undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
+        test_dataset = EvalTargetDataset(data, split='test', num_negatives=test_num_negatives)
+        test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
+
+        metrics_results = compute_recommendation_metrics(
+            embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
+            metrics=metrics,
+            eval_loader=test_loader
+        )
+
+        return metrics_results
+
+    @torch.no_grad()
+    def recommend(self, *, data: TargetData, num_recommendations: int, batch_size: int = 1024) -> torch.Tensor:
+        """
+        Generate recommendations for the given users, avoiding items they have already interacted with.
+
+        :param data: The target dataset.
+        :param num_recommendations: The number of recommendations to generate per user.
+        :param batch_size: The batch size for generating recommendations.
+        :return: Edge index tensor of shape (2, num_users * num_recommendations) containing recommendations.
+        """
+        self.eval()
+
+        undirected_behavioral_edge_index = to_undirected(data.behavioral_edge_index)
+        embeds = self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index)
+
+        return recommend_items(
+            embeds=embeds,
+            num_users=self.num_users,
+            num_recommendations=num_recommendations,
+            mask_edge_index=data.behavioral_edge_index,
+            batch_size=batch_size
+        )
 
     def __repr__(self) -> str:
         return (
-            f'DESIGN('
+            f'{self.__class__.__name__}('
             f'num_users={self.num_users}, '
             f'num_items={self.num_items}, '
             f'embed_dim={self.twin.embeds.embedding_dim}, '

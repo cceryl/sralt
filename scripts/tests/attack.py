@@ -5,131 +5,167 @@ import logging
 import warnings
 
 import torch
-from torchmetrics import Metric, AUROC, F1Score, Precision, Recall
+import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.utils import to_undirected
+from torch_geometric.metrics import LinkPredRecall, LinkPredNDCG
+from torchmetrics import AUROC, F1Score, Precision, Recall
 
-from sralt.target.data import load_dataset
-from sralt.target.model import create_target_model
-from sralt.shadow.data import ShadowData
-from sralt.shadow.model import create_shadow_model
-from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset
-from sralt.attack.model import create_attack_model
-from sralt.utils import setup_logging, get_device, set_seed, DataLoader, TPRatFPR, AdamWithGradientClipping
+from sralt.target.data import load_target_data
+from sralt.target.model import load_target_model
+from sralt.shadow.data import load_shadow_data
+from sralt.shadow.model import load_shadow_model
+from sralt.attack.data import load_attack_data
+from sralt.attack.model import load_attack_model, test_attack_model
+from sralt.utils import setup_logging, get_device
+from sralt.utils import AdamWithGradientClipping, TPRatFPR
 
 
 def main():
-    runs_path = 'runs/tests/attack_model_test'
+    runs_path = 'runs/tests/attack_model'
     os.makedirs(runs_path, exist_ok=True)
     setup_logging(log_file=os.path.join(runs_path, 'train.log'), tz='Asia/Shanghai')
     writer = SummaryWriter(log_dir=runs_path)
 
-    set_seed(42)
-    device = get_device()
+    seed = 42
+    deterministic = True
+    device = get_device(allow_share=True)
 
-    target_model_path = './runs/tests/target_model_test/model.pth'
-    shadow_model_path = './runs/tests/shadow_model_test/model.pth'
-
-    target_data = load_dataset(
+    target_data = load_target_data(
+        seed=seed,
+        deterministic=deterministic,
         name='Ciao',
         directory='./data/ciao',
         config={
             'min_rating': 2,
             'min_social_connections': 1,
             'min_user_interactions': 5,
-            'min_item_interactions': 0
+            'min_item_interactions': 1
         }
     ).to(device)
-    target_model = create_target_model(
+
+    target_model = load_target_model(
+        seed=seed,
+        deterministic=deterministic,
+        device=device,
         name='DESIGN',
-        num_users=target_data.num_users,
-        num_items=target_data.num_items,
-        config={
+        model_config={
             'embed_dim': 64,
             'user_fusion_layers': [0, 1, 2],
             'item_fusion_layers': [0, 1, 2],
             'decay': 5e-3,
-            'distill_weight': 0.1
-        }
-    ).to(device)
-    target_model.load_state_dict(torch.load(target_model_path, map_location=device, weights_only=True))
+            'distill_weight': 1e-2
+        },
+        data=target_data,
+        train_config={
+            'train_batch_size': 32768,
+            'val_batch_size': 4096,
+            'val_num_negatives': 999,
+            'num_epochs': 300,
+            'optimizer_cls': optim.Adam,
+            'optimizer_kwargs': {'lr': 1e-2},
+            'metrics': [LinkPredRecall(k=10), LinkPredNDCG(k=10)],
+            'metric_aggregator': 'lambda loss, metrics: sum(metrics)',
+            'early_stopping_kwargs': {'patience': 10, 'greater_is_better': True}
+        },
+        writer=writer
+    )
 
-    shadow_data = ShadowData(
+    shadow_data = load_shadow_data(
+        seed=seed,
+        deterministic=deterministic,
         target_data=target_data,
         target_model=target_model,
         shadow_social_ratio=0.1,
         num_recommendations=30,
-        inference_batch_size=2048
+        inference_batch_size=1024
     ).to(device)
-    shadow_model = create_shadow_model(
+
+    shadow_model = load_shadow_model(
+        seed=seed,
+        deterministic=deterministic,
+        device=device,
         name='SMIA',
-        num_users=shadow_data.num_users,
-        num_items=shadow_data.num_items,
-        config={
+        model_config={
             'embed_dim': 64,
             'num_layers': 2,
-            'decay': 1e-3
-        }
-    ).to(device)
-    shadow_model.load_state_dict(torch.load(shadow_model_path, map_location=device, weights_only=True))
-
-    assert shadow_data.target_data_repr == repr(target_data)
-    assert shadow_data.target_model_repr == repr(target_model)
-
-    attack_data = AttackData(
-        target_data=target_data,
-        shadow_data=shadow_data,
-        val_ratio=0.1
-    ).to(device)
-    user_features = shadow_model.get_user_features(
-        social_edge_index=shadow_data.social_edge_index,
-        behavioral_edge_index=to_undirected(shadow_data.behavioral_edge_index)
-    ).detach()
-
-    train_dataset = TrainAttackDataset(attack_data)
-    val_dataset = EvalAttackDataset(attack_data, split='val')
-    test_dataset = EvalAttackDataset(attack_data, split='test')
-
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=2048, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=2048, shuffle=False)
-
-    attack_model = create_attack_model(
-        name='SMIA',
-        user_feature_dim=user_features.size(1),
-        config={
-            'dropout': 0.5,
-            'leaky_relu_slope': 0.2
-        }
-    ).to(device)
-
-    metrics: list[Metric] = [
-        AUROC(task='binary'),
-        TPRatFPR(target_fpr=0.01),
-        F1Score(task='binary'),
-        Precision(task='binary'),
-        Recall(task='binary')
-    ]
-    metrics_weights = [1.0, 1.0, 1.0, 0.0, 0.0]
-
-    test_metrics = attack_model.train_model(
-        user_features=user_features,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        test_loader=test_loader,
-        num_epochs=50,
-        loss_fn=torch.nn.BCEWithLogitsLoss().to(device),
-        optimizer_cls=AdamWithGradientClipping,
-        optimizer_kwargs={'lr': 1e-3, 'weight_decay': 1e-4, 'grad_clip_norm': 5.0},
-        metrics=metrics,
-        metric_aggregator=lambda loss, metrics: sum(w * m for w, m in zip(metrics_weights, metrics)),
-        early_stopping_kwargs={'patience': 10, 'greater_is_better': True},
+            'decay': 1e-2
+        },
+        data=shadow_data,
+        train_config={
+            'train_batch_size': 8192,
+            'val_batch_size': 2048,
+            'val_num_negatives': 999,
+            'num_epochs': 100,
+            'optimizer_cls': optim.Adam,
+            'optimizer_kwargs': {'lr': 1e-2},
+            'metrics': [LinkPredRecall(k=10), LinkPredNDCG(k=10)],
+            'metric_aggregator': 'lambda loss, metrics: sum(metrics)',
+            'early_stopping_kwargs': {'patience': 10, 'greater_is_better': True}
+        },
         writer=writer
     )
 
-    for name, value in test_metrics.items():
+    attack_data = load_attack_data(
+        seed=seed,
+        deterministic=deterministic,
+        target_data=target_data,
+        shadow_data=shadow_data,
+        shadow_model=shadow_model,
+        val_ratio=0.1
+    ).to(device)
+
+    attack_model = load_attack_model(
+        seed=seed,
+        deterministic=deterministic,
+        device=device,
+        name='SMIA',
+        model_config={
+            'dropout': 0.5,
+            'leaky_relu_slope': 0.2,
+            'pos_weight': 10.0
+        },
+        data=attack_data,
+        train_config={
+            'train_batch_size': 256,
+            'val_batch_size': 2048,
+            'num_epochs': 50,
+            'optimizer_cls': AdamWithGradientClipping,
+            'optimizer_kwargs': {'lr': 1e-3, 'weight_decay': 1e-4, 'grad_clip_norm': 1.0},
+            'metrics': [
+                AUROC(task='binary'),
+                F1Score(task='binary'),
+                TPRatFPR(target_fpr=0.01),
+                Precision(task='binary'),
+                Recall(task='binary')
+            ],
+            'metric_aggregator': 'lambda loss, metrics: metrics[0] + metrics[1]',
+            'early_stopping_kwargs': {'patience': 5, 'greater_is_better': True}
+        },
+        writer=writer
+    )
+
+    test_metrics = test_attack_model(
+        seed=seed,
+        deterministic=deterministic,
+        device=device,
+        model=attack_model,
+        data=attack_data,
+        metrics=[
+            AUROC(task='binary'),
+            F1Score(task='binary'),
+            TPRatFPR(target_fpr=0.01),
+            Precision(task='binary'),
+            Recall(task='binary')
+        ],
+        test_config={
+            'test_batch_size': 2048
+        }
+    )
+
+    for name, value in zip(['AUROC', 'F1 Score', 'TPR@FPR=0.01', 'Precision', 'Recall'], test_metrics):
         logging.info(f'Test {name}: {value:.4f}')
 
+    logging.info(f'Model representation: {attack_model}')
     torch.save(attack_model.state_dict(), os.path.join(runs_path, 'model.pth'))
     writer.close()
 

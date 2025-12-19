@@ -1,5 +1,139 @@
+import typing
+from typing import Callable
+
 import torch
 from torchmetrics import Metric
+from torch_geometric.utils import coalesce
+from torch_geometric.metrics.link_pred import LinkPredMetric
+
+from .data import DataLoader
+
+
+@torch.no_grad()
+def recommend_items(
+    embeds: torch.Tensor,
+    num_users: int,
+    num_recommendations: int,
+    mask_edge_index: torch.Tensor | None,
+    batch_size: int = 1024
+) -> torch.Tensor:
+    """
+    Generate recommendations for the users based on dot product scores.
+    All indices must be global, with users in [0, num_users) and items in [num_users, num_users + num_items).
+
+    :param embeds: Combined user and item embeddings tensor of shape (num_users + num_items, embed_dim).
+    :param num_users: Number of users.
+    :param num_recommendations: The number of recommendations to generate per user.
+    :param mask_edge_index: Edge index tensor of shape (2, num_edges) representing user-item interactions to be masked (excluded) from recommendations.
+    :param batch_size: Batch size for processing users.
+    :return: Edge index tensor of shape (2, num_users * num_recommendations) containing recommendations.
+    """
+    item_embeds = embeds[num_users:]
+    device = embeds.device
+
+    mask_users = torch.tensor([], dtype=torch.long, device=device)
+    mask_items = torch.tensor([], dtype=torch.long, device=device)
+    if mask_edge_index is not None:
+        mask_users, mask_items = mask_edge_index
+        mask_items = mask_items - num_users
+
+    recommendations = []
+    for start in range(0, num_users, batch_size):
+        end = min(start + batch_size, num_users)
+
+        scores = embeds[start:end] @ item_embeds.t()
+        batch_mask = (start <= mask_users) & (mask_users < end)
+        scores[mask_users[batch_mask] - start, mask_items[batch_mask]] = float('-inf')
+        _, top_items = torch.topk(scores, k=num_recommendations, sorted=True)
+
+        top_items: torch.Tensor
+        users = torch.arange(start, end, device=device).repeat_interleave(num_recommendations)
+        items = top_items.flatten() + num_users
+        recommendations.append(torch.stack([users, items], dim=0))
+
+    return coalesce(torch.cat(recommendations, dim=1))
+
+
+@torch.no_grad()
+def compute_recommendation_metrics(
+    embeds: torch.Tensor,
+    metrics: list[LinkPredMetric],
+    eval_loader: DataLoader
+) -> list[float]:
+    """
+    Compute multiple recommendation metrics (e.g., Recall, NDCG) at given k(s) using dot product scores.
+    All indices must be global, with users in [0, num_users) and items in [num_users, num_users + num_items).
+
+    :param embeds: The combined user and item embeddings.
+    :param metrics: A list of metric calculators.
+    :param eval_loader: DataLoader for evaluation data yielding (users, pos_items, neg_items), 
+                        where users & pos_items of shape (batch_size,), neg_items of shape (batch_size, num_neg).
+    :return: The computed metrics as a list of floats.
+    """
+    device = embeds.device
+    max_k = max([metric.k for metric in metrics])
+    calculators = [typing.cast(Metric, metric).to(device) for metric in metrics]
+    for calculator in calculators:
+        calculator.reset()
+
+    for users, pos_items, neg_items in eval_loader:
+        if max_k > neg_items.size(1) + 1:
+            raise ValueError('Number of candidate items must be at least k.')
+
+        users: torch.Tensor
+        pos_items: torch.Tensor
+        neg_items: torch.Tensor
+
+        # Score candidate items
+        candidate_items = torch.cat([pos_items.unsqueeze(1), neg_items], dim=1)
+        user_embeds_batch = embeds[users].unsqueeze(1)
+        item_embeds_batch = embeds[candidate_items]
+        scores = (user_embeds_batch * item_embeds_batch).sum(dim=-1)
+
+        # Get top-k item indices among candidate items for each user
+        _, topk_local = torch.topk(scores, k=max_k, sorted=True)
+        topk_global = torch.gather(candidate_items, 1, topk_local)
+
+        # Update all calculators
+        users_range = torch.arange(users.size(0), device=device)
+        edge_label_index = torch.stack([users_range, pos_items])
+
+        for calculator in calculators:
+            calculator.update(topk_global[:, :calculator.k], edge_label_index)
+
+    return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators]
+
+
+@torch.no_grad()
+def compute_attack_metrics(
+    device: torch.device,
+    predictor: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    metrics: list[Metric],
+    eval_loader: DataLoader,
+) -> list[float]:
+    """
+    Compute binary classification metrics for attack models.
+
+    :param device: The device of the eval_loader.
+    :param predictor: A callable that takes two tensors of user indices and returns predicted probabilities.
+    :param metrics: A list of metric calculators.
+    :param eval_loader: DataLoader for evaluation data yielding (user1, user2, labels).
+    :return: A list of computed metric values.
+    """
+    calculators = [metric.to(device) for metric in metrics]
+    for calculator in calculators:
+        calculator.reset()
+
+    for user1, user2, labels in eval_loader:
+        user1: torch.Tensor
+        user2: torch.Tensor
+
+        probs = predictor(user1, user2)
+
+        for calculator in calculators:
+            calculator.update(probs, labels)
+
+    return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators]
 
 
 class TPRatFPR(Metric):
@@ -12,10 +146,9 @@ class TPRatFPR(Metric):
         """
         Initialize the TPRatFPR metric.
 
-        :param target_fpr: The target false positive rate (between 0 and 1).
+        :param target_fpr: The target false positive rate.
         """
         super().__init__(dist_sync_on_step=False)
-        assert 0 <= target_fpr <= 1
 
         self.target_fpr = target_fpr
         self.preds: list[torch.Tensor]
