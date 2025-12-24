@@ -110,30 +110,51 @@ def compute_attack_metrics(
     predictor: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     metrics: list[Metric],
     eval_loader: DataLoader,
-) -> list[float]:
+    head_indices: torch.Tensor,
+    tail_indices: torch.Tensor
+) -> tuple[list[float], list[float], list[float]]:
     """
     Compute binary classification metrics for attack models.
+    Note that for head/tail users, samples with 1 head/tail node are counted once, and samples with 2 head/tail nodes are counted twice.
 
-    :param device: The device of the eval_loader.
+    :param device: The device of the evaluation data loader.
     :param predictor: A callable that takes two tensors of user indices and returns predicted probabilities.
     :param metrics: A list of metric calculators.
     :param eval_loader: DataLoader for evaluation data yielding (user1, user2, labels).
-    :return: A list of computed metric values.
+    :param head_indices: Tensor of head user indices.
+    :param tail_indices: Tensor of tail user indices.
+    :return: A tuple of lists of computed metric values for all users, head users, and tail users respectively.
     """
-    calculators = [metric.to(device) for metric in metrics]
-    for calculator in calculators:
-        calculator.reset()
+    head_indices = head_indices.to(device)
+    tail_indices = tail_indices.to(device)
+
+    for metric in metrics:
+        metric.reset()
+
+    groups = ['all', 'head', 'tail']
+    calculators = {group: [metric.clone().to(device) for metric in metrics] for group in groups}
 
     for user1, user2, labels in eval_loader:
-        user1: torch.Tensor
-        user2: torch.Tensor
-
         probs = predictor(user1, user2)
 
-        for calculator in calculators:
+        for calculator in calculators['all']:
             calculator.update(probs, labels)
 
-    return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators]
+        for group, indices in [('head', head_indices), ('tail', tail_indices)]:
+            mask1 = torch.isin(user1, indices)
+            mask2 = torch.isin(user2, indices)
+
+            combined_probs = torch.cat([probs[mask1], probs[mask2]], dim=0)
+            combined_labels = torch.cat([labels[mask1], labels[mask2]], dim=0)
+
+            if combined_labels.numel() > 0:
+                for calculator in calculators[group]:
+                    calculator.update(combined_probs, combined_labels)
+
+    def compute_group_metrics(group: str) -> list[float]:
+        return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators[group]]
+
+    return compute_group_metrics('all'), compute_group_metrics('head'), compute_group_metrics('tail')
 
 
 class TPRatFPR(Metric):

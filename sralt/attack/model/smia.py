@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from . import register_attack_model
 from .base import AttackModel
 from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset
-from sralt.utils import timer, calculate_model_fingerprint, compute_attack_metrics
+from sralt.utils import timer, head_tail_split, calculate_model_fingerprint, compute_attack_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
 
@@ -81,7 +81,7 @@ class SMIAAttack(AttackModel):
 
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
     def train_model(
-        self, *, data: AttackData, writer: SummaryWriter | None,
+        self, *, data: AttackData, tail_ratio: float, writer: SummaryWriter | None,
         train_batch_size: int, val_batch_size: int,
         num_epochs: int, optimizer_cls: type[optim.Optimizer], optimizer_kwargs: dict[str, Any],
         metrics: list[Metric], metric_aggregator: types.CodeType, early_stopping_kwargs: dict[str, Any],
@@ -91,15 +91,16 @@ class SMIAAttack(AttackModel):
         Train the attack model.
 
         :param data: The attack dataset.
+        :param tail_ratio: The ratio to be considered as tail users.
         :param writer: Optional TensorBoard writer for logging.
-        :train_batch_size: Batch size for training.
-        :val_batch_size: Batch size for validation.
-        :num_epochs: Number of training epochs.
-        :optimizer_cls: Optimizer class.
-        :optimizer_kwargs: Keyword arguments for the optimizer.
-        :metrics: A list of metric calculators.
-        :metric_aggregator: A function to aggregate metrics for early stopping.
-        :early_stopping_kwargs: Keyword arguments for early stopping.
+        :param train_batch_size: Batch size for training.
+        :param val_batch_size: Batch size for validation.
+        :param num_epochs: Number of training epochs.
+        :param optimizer_cls: Optimizer class.
+        :param optimizer_kwargs: Keyword arguments for the optimizer.
+        :param metrics: A list of metric calculators.
+        :param metric_aggregator: A function to aggregate metrics for early stopping.
+        :param early_stopping_kwargs: Keyword arguments for early stopping.
         """
         train_dataset = TrainAttackDataset(data)
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
@@ -112,6 +113,7 @@ class SMIAAttack(AttackModel):
 
         model_name = self.__class__.__name__
         metrics_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
+        head_indices, tail_indices = head_tail_split(data.num_users, data.target_social_edge_index, tail_ratio)
 
         for epoch in range(1, num_epochs + 1):
             self.train()
@@ -137,48 +139,63 @@ class SMIAAttack(AttackModel):
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
             self.eval()
-            metrics_results = compute_attack_metrics(
+            all_results, head_results, tail_results = compute_attack_metrics(
                 device=data.device,
                 predictor=lambda u1, u2: self.predict(torch.stack([u1, u2]), data.user_features),
                 metrics=metrics,
-                eval_loader=val_loader
+                eval_loader=val_loader,
+                head_indices=head_indices,
+                tail_indices=tail_indices
             )
-            metrics_str = ', '.join(f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results))
-            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
+
+            def metrics_to_str(results: list[float]) -> str:
+                return ', '.join(f'{name}={value:.4f}' for name, value in zip(metrics_names, results))
+
+            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_to_str(all_results)}')
+            logging.info(f'    Head users: {metrics_to_str(head_results)}')
+            logging.info(f'    Tail users: {metrics_to_str(tail_results)}')
 
             if writer is not None:
-                for name, value in zip(metrics_names, metrics_results):
-                    writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
+                for group, results in [('All', all_results), ('Head', head_results), ('Tail', tail_results)]:
+                    for name, value in zip(metrics_names, results):
+                        writer.add_scalar(f'{model_name}/{name}/{group}', value, epoch)
 
-            aggregate_metric = metric_aggregator_fn(average_loss, metrics_results)
+            aggregate_metric = metric_aggregator_fn(average_loss, all_results)
             if early_stopping.step(aggregate_metric):
                 break
 
         early_stopping.load_best_state()
 
     @torch.no_grad()
-    def test_model(self, *, data: AttackData, metrics: list[Metric], test_batch_size: int, **kwargs) -> list[float]:
+    def test_model(
+        self, *, data: AttackData, tail_ratio: float, metrics: list[Metric], test_batch_size: int, **kwargs
+    ) -> tuple[list[float], list[float], list[float]]:
         """
         Test the attack model.
 
         :param data: The attack dataset.
+        :param tail_ratio: The ratio to be considered as tail users.
         :param metrics: A list of metric calculators.
         :param test_batch_size: Batch size for testing.
-        :return: A list of computed metric values.
+        :return: A tuple of lists of computed metric values for all, head, and tail groups.
         """
         self.eval()
 
         test_dataset = EvalAttackDataset(data, split='test')
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
-        metrics_results = compute_attack_metrics(
+        head_indices, tail_indices = head_tail_split(data.num_users, data.target_social_edge_index, tail_ratio=0.8)
+
+        results = compute_attack_metrics(
             device=data.device,
             predictor=lambda u1, u2: self.predict(torch.stack([u1, u2]), data.user_features),
             metrics=metrics,
-            eval_loader=test_loader
+            eval_loader=test_loader,
+            head_indices=head_indices,
+            tail_indices=tail_indices
         )
 
-        return metrics_results
+        return results
 
     def __repr__(self) -> str:
         """

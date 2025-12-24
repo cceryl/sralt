@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import DataLoader as TorchDataLoader
+from torch_geometric.utils import degree
 
 
 def leave_one_out_split(edge_index: torch.Tensor, num_users: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -29,6 +30,25 @@ def leave_one_out_split(edge_index: torch.Tensor, num_users: int) -> tuple[torch
     train_mask = ~(val_mask | test_mask)
 
     return edge_index[:, train_mask], edge_index[:, val_mask], edge_index[:, test_mask]
+
+
+def head_tail_split(num_nodes: int, edge_index: torch.Tensor, tail_ratio: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Split nodes into head and tail based on their degrees.
+
+    :param num_nodes: Total number of nodes.
+    :param edge_index: Undirected edge index tensor of shape (2, num_edges).
+    :param tail_ratio: The ratio to be considered as tail nodes.
+    :return: A tuple containing head node indices and tail node indices.
+    """
+    degrees = degree(edge_index[0], num_nodes=num_nodes)
+    _, sorted_indices = torch.sort(degrees)
+
+    split_idx = int(num_nodes * tail_ratio)
+    tail_indices = sorted_indices[:split_idx]
+    head_indices = sorted_indices[split_idx:]
+
+    return head_indices, tail_indices
 
 
 def sample_negative_items(

@@ -7,7 +7,7 @@ import torch
 import torch.optim as optim
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.nn.models import LightGCN
+from torch_geometric.nn import LightGCN
 from torch_geometric.utils import to_undirected
 from torch_geometric.metrics.link_pred import LinkPredMetric
 

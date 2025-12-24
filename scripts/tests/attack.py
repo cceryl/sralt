@@ -125,6 +125,7 @@ def main():
             'pos_weight': 10.0
         },
         data=attack_data,
+        tail_ratio=0.8,
         train_config={
             'train_batch_size': 256,
             'val_batch_size': 2048,
@@ -150,6 +151,7 @@ def main():
         device=device,
         model=attack_model,
         data=attack_data,
+        tail_ratio=0.8,
         metrics=[
             AUROC(task='binary'),
             F1Score(task='binary'),
@@ -161,9 +163,10 @@ def main():
             'test_batch_size': 2048
         }
     )
-
-    for name, value in zip(['AUROC', 'F1 Score', 'TPR@FPR=0.01', 'Precision', 'Recall'], test_metrics):
-        logging.info(f'Test {name}: {value:.4f}')
+    
+    for group, metrics in zip(['All', 'Head', 'Tail'], test_metrics):
+        for name, value in zip(['AUROC', 'F1 Score', 'TPR@FPR=0.01', 'Precision', 'Recall'], metrics):
+            logging.info(f'Test {group} {name}: {value:.4f}')
 
     logging.info(f'Model representation: {attack_model}')
     torch.save(attack_model.state_dict(), os.path.join(runs_path, 'model.pth'))

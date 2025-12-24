@@ -51,7 +51,8 @@ def create_attack_model(name: str, user_feature_dim: int, config: dict[str, Any]
 def load_attack_model(
     seed: int, deterministic: bool, device: torch.device,
     name: str, model_config: dict[str, Any],
-    data: AttackData, train_config: dict[str, Any], writer: SummaryWriter | None
+    data: AttackData, tail_ratio: float, train_config: dict[str, Any],
+    writer: SummaryWriter | None
 ) -> AttackModel:
     """
     Load a trained attack model.
@@ -62,6 +63,7 @@ def load_attack_model(
     :param name: The name of the model.
     :param model_config: The model configuration dictionary required by the specified model.
     :param data: The attack dataset.
+    :param tail_ratio: The ratio to be considered as tail users.
     :param train_config: The training configuration dictionary required by the specified model.
     :param writer: Optional TensorBoard writer for logging.
     :return: A trained instance of the model.
@@ -74,16 +76,16 @@ def load_attack_model(
         config=model_config
     ).to(device)
 
-    model.train_model(data=data, writer=writer, **train_config)
+    model.train_model(data=data, tail_ratio=tail_ratio, writer=writer, **train_config)
 
     return model
 
 
 def test_attack_model(
     seed: int, deterministic: bool, device: torch.device,
-    model: AttackModel, data: AttackData,
+    model: AttackModel, data: AttackData, tail_ratio: float,
     metrics: list[Metric], test_config: dict[str, Any]
-) -> list[float]:
+) -> tuple[list[float], list[float], list[float]]:
     """
     Test the attack model.
 
@@ -92,13 +94,14 @@ def test_attack_model(
     :param device: The device to run the model on.
     :param model: The attack model to be tested.
     :param data: The attack dataset.
+    :param tail_ratio: The ratio to be considered as tail users.
     :param metrics: A list of metric calculators.
     :param test_config: The testing configuration dictionary required by the specified model.
-    :return: A list of computed metric values.
+    :return: A tuple of lists of computed metric values for all, head, and tail groups.
     """
     set_seed(seed, deterministic)
 
-    return model.to(device).test_model(data=data.to(device), metrics=metrics, **test_config)
+    return model.to(device).test_model(data=data.to(device), metrics=metrics, tail_ratio=tail_ratio, **test_config)
 
 
 for _, module_name, _ in pkgutil.iter_modules([os.path.dirname(__file__)]):

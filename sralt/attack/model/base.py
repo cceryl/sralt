@@ -24,11 +24,12 @@ class AttackModel(nn.Module, ABC):
 
     @abstractmethod
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
-    def train_model(self, *, data: AttackData, writer: SummaryWriter | None, **kwargs):
+    def train_model(self, *, data: AttackData, tail_ratio: float, writer: SummaryWriter | None, **kwargs):
         """
         Train the attack model.
 
         :param data: The attack dataset.
+        :param tail_ratio: The ratio to be considered as tail users.
         :param writer: Optional TensorBoard writer for logging.
         :param kwargs: Additional training parameters specific to the model.
         """
@@ -36,14 +37,15 @@ class AttackModel(nn.Module, ABC):
 
     @abstractmethod
     @torch.no_grad()
-    def test_model(self, *, data: AttackData, metrics: list[Metric], **kwargs) -> list[float]:
+    def test_model(self, *, data: AttackData, tail_ratio: float, metrics: list[Metric], **kwargs) -> tuple[list[float], list[float], list[float]]:
         """
         Test the attack model.
 
         :param data: The attack dataset.
+        :param tail_ratio: The ratio to be considered as tail users.
         :param metrics: A list of metric calculators.
         :param kwargs: Additional testing parameters specific to the model.
-        :return: A list of computed metric values.
+        :return: A tuple of lists of computed metric values for all, head, and tail groups.
         """
         pass
 
