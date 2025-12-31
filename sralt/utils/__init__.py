@@ -11,5 +11,5 @@ __all__ = [
     'set_seed', 'EarlyStopping', 'AdamWithGradientClipping', 'FocalLoss',
     'leave_one_out_split', 'head_tail_split', 'sample_negative_items', 'DataLoader',
     'build_normalized_adj', 'calculate_tensor_fingerprint', 'calculate_model_fingerprint',
-    'recommend_items', 'compute_recommendation_metrics', 'compute_attack_metrics', 'TPRatFPR',
+    'recommend_items', 'compute_recommendation_metrics', 'compute_attack_metrics', 'TPRatFPR'
 ]

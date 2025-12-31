@@ -7,6 +7,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.backends.cuda as cuda
 import torch.backends.cudnn as cudnn
 import numpy as np
 
@@ -26,8 +27,14 @@ def set_seed(seed: int, deterministic: bool = True):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+    cuda.matmul.allow_tf32 = not deterministic
+    cuda.matmul.allow_fp16_reduced_precision_reduction = not deterministic
+
     cudnn.deterministic = deterministic
     cudnn.benchmark = not deterministic
+    cudnn.allow_tf32 = not deterministic
+
+    torch.set_float32_matmul_precision('highest' if deterministic else 'high')
     torch.use_deterministic_algorithms(deterministic)
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8' if deterministic else ''
 

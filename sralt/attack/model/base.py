@@ -50,6 +50,18 @@ class AttackModel(nn.Module, ABC):
         pass
 
     @abstractmethod
+    @torch.no_grad()
+    def predict(self, user_edge_index: torch.Tensor, user_features: torch.Tensor) -> torch.Tensor:
+        """
+        Predict the attack outcome.
+
+        :param user_edge_index: Edge index tensor of shape (2, batch_size).
+        :param user_features: Tensor of shape (num_users, user_feature_dim) representing user features.
+        :return: The predicted probability tensor of shape (batch_size,).
+        """
+        pass
+
+    @abstractmethod
     def __repr__(self) -> str:
         """
         String representation and fingerprint of the model.

@@ -16,6 +16,7 @@ from sralt.shadow.data import load_shadow_data
 from sralt.shadow.model import load_shadow_model
 from sralt.attack.data import load_attack_data
 from sralt.attack.model import load_attack_model, test_attack_model
+from sralt.attack.analysis import visualize_attack_probs
 from sralt.utils import setup_logging, get_device
 from sralt.utils import AdamWithGradientClipping, TPRatFPR
 
@@ -163,13 +164,20 @@ def main():
             'test_batch_size': 2048
         }
     )
-    
+
     for group, metrics in zip(['All', 'Head', 'Tail'], test_metrics):
         for name, value in zip(['AUROC', 'F1 Score', 'TPR@FPR=0.01', 'Precision', 'Recall'], metrics):
             logging.info(f'Test {group} {name}: {value:.4f}')
 
     logging.info(f'Model representation: {attack_model}')
     torch.save(attack_model.state_dict(), os.path.join(runs_path, 'model.pth'))
+    visualize_attack_probs(
+        attack_model=attack_model,
+        attack_data=attack_data,
+        tail_ratio=0.8,
+        seed=seed,
+        save_path=f'{runs_path}/attack_prob_distribution.png'
+    )
     writer.close()
 
 
