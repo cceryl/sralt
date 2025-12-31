@@ -9,10 +9,8 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.metrics import LinkPredRecall, LinkPredNDCG
 
-from sralt.target.data import load_target_data
-from sralt.target.model import load_target_model
-from sralt.shadow.data import load_shadow_data
-from sralt.shadow.model import load_shadow_model, test_shadow_model
+from sralt.target import load_target_data, load_target_model
+from sralt.shadow import load_shadow_data, load_shadow_model, test_shadow_model
 from sralt.utils import setup_logging, get_device
 
 

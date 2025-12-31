@@ -10,14 +10,10 @@ from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.metrics import LinkPredRecall, LinkPredNDCG
 from torchmetrics import AUROC, F1Score, Precision, Recall
 
-from sralt.target.data import load_target_data, TargetData
-from sralt.target.model import load_target_model, test_target_model, TargetModel
-from sralt.shadow.data import load_shadow_data, ShadowData
-from sralt.shadow.model import load_shadow_model, test_shadow_model, ShadowModel
-from sralt.attack.data import load_attack_data, AttackData
-from sralt.attack.model import load_attack_model, test_attack_model, AttackModel
-from sralt.utils import setup_logging, get_device
-from sralt.utils import AdamWithGradientClipping, TPRatFPR
+from sralt.target import load_target_data, load_target_model, test_target_model, TargetData, TargetModel
+from sralt.shadow import load_shadow_data, load_shadow_model, test_shadow_model, ShadowData, ShadowModel
+from sralt.attack import load_attack_data, load_attack_model, test_attack_model, AttackData, AttackModel
+from sralt.utils import setup_logging, get_device, AdamWithGradientClipping, TPRatFPR
 
 
 def target_stage(
