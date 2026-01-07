@@ -19,12 +19,13 @@ from sralt.utils import timer, build_normalized_adj, calculate_model_fingerprint
 from sralt.utils import DataLoader, EarlyStopping
 
 
-@register_shadow_model('SocialCodeReconstruction')
-class SocialCodeReconstruction(ShadowModel):
+@register_shadow_model('SR')
+class SemanticReconstruction(ShadowModel):
     """
-    Shadow model implementing the Social Code Reconstruction (SCR) approach.
-    Stage Behavioral: Train behavioral branch with RVQ on behavioral graph to obtain user codes.
-    Stage Social: Train social branch with user codes on social graph.
+    Shadow model implementing the Semantic Reconstruction (SR) approach for social recommendation.
+
+    Stage Behavioral: Train behavioral branch with RVQ on behavioral graph to obtain semantic user codes.
+    Stage Social: Train social branch on social graph using reconstructed user embeddings from semantic codes.
     """
 
     def __init__(
@@ -191,7 +192,7 @@ class SocialCodeReconstruction(ShadowModel):
         nodes: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute the recommendation loss for the SCR model.
+        Compute the recommendation loss for the SR model.
 
         :param stage: Current training stage, either 'social' or 'behavioral'.
         :param pos_scores: Scores for positive interactions.
@@ -226,7 +227,7 @@ class SocialCodeReconstruction(ShadowModel):
         writer: SummaryWriter | None,
     ):
         """
-        Train a specific stage of the SCR shadow model.
+        Train a specific stage of the SR shadow model.
 
         :param stage: Current training stage, either 'social' or 'behavioral'.
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
@@ -304,7 +305,7 @@ class SocialCodeReconstruction(ShadowModel):
         **kwargs
     ):
         """
-        Train the SCR shadow model.
+        Train the SR shadow model.
 
         :param data: The target dataset.
         :param writer: Optional TensorBoard writer for logging.
@@ -372,7 +373,7 @@ class SocialCodeReconstruction(ShadowModel):
         **kwargs
     ) -> list[float]:
         """
-        Test the SCR shadow model.
+        Test the SR shadow model.
 
         :param data: The shadow dataset.
         :param metrics: A list of link prediction metrics to compute.
@@ -447,7 +448,7 @@ class SocialCodeReconstruction(ShadowModel):
 
     def __repr__(self) -> str:
         return (
-            f'SocialCodeReconstruction('
+            f'SemanticReconstruction('
             f'num_users={self.num_users}, '
             f'num_items={self.num_items}, '
             f'embed_dim={self.embed_dim}, '
