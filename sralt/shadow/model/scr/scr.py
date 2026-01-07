@@ -37,7 +37,7 @@ class SocialCodeReconstruction(ShadowModel):
         rvq_num_quantizers: int,
         rvq_codebook_size: int,
         commitment_weight: float,
-        ablation_without_quantization: bool = False,
+        without_quantization: bool = False,
         ablation_code: Literal['base', 'one-to-one', 'random'] = 'base',
         ablation_feature: Literal['base', 'without-social', 'without-behavioral'] = 'base'
     ):
@@ -50,7 +50,7 @@ class SocialCodeReconstruction(ShadowModel):
         :param rvq_num_quantizers: Number of quantizers in RVQ.
         :param rvq_codebook_size: Size of the codebook in RVQ.
         :param commitment_weight: Weight for the RVQ commitment loss.
-        :param ablation_without_quantization: If True, use the behavioral embeddings directly without quantization in behavioral stage.
+        :param without_quantization: If True, use the behavioral embeddings directly without quantization in behavioral stage.
         :param ablation_code: Ablation for user codes, with 'one-to-one' to use direct mapping and 'random' for random codes.
         :param ablation_feature: Use only one branch for user features if 'without-social' or 'without-behavioral'.
         """
@@ -62,7 +62,7 @@ class SocialCodeReconstruction(ShadowModel):
         self.rvq_num_quantizers = rvq_num_quantizers
         self.rvq_codebook_size = rvq_codebook_size
         self.commitment_weight = commitment_weight
-        self.ablation_without_quantization = ablation_without_quantization
+        self.without_quantization = without_quantization
         self.ablation_code = ablation_code
         self.ablation_feature = ablation_feature
 
@@ -148,7 +148,7 @@ class SocialCodeReconstruction(ShadowModel):
                 offset = torch.arange(self.rvq_num_quantizers, device=self.user_codes.device) * self.rvq_codebook_size
                 self.user_codes += offset.unsqueeze(0)
 
-                embeds = quantized if not self.ablation_without_quantization else embeds
+                embeds = quantized if not self.without_quantization else embeds
                 src = embeds[target_edge_index[0]]
                 dst = embeds[target_edge_index[1]]
 
@@ -456,8 +456,8 @@ class SocialCodeReconstruction(ShadowModel):
             f'rvq_num_quantizers={self.rvq_num_quantizers}, '
             f'rvq_codebook_size={self.rvq_codebook_size}, '
             f'commitment_weight={self.commitment_weight}, '
-            f'ablation_without_quantization={self.ablation_without_quantization}, '
-            f'ablation_code="{self.ablation_code}", '
-            f'ablation_feature="{self.ablation_feature}", '
+            f'without_quantization={self.without_quantization}, '
+            f'ablation_code={self.ablation_code}, '
+            f'ablation_feature={self.ablation_feature}, '
             f'fingerprint={calculate_model_fingerprint(self)})'
         )

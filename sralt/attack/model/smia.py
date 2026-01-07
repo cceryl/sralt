@@ -186,7 +186,9 @@ class SMIAAttack(AttackModel):
         test_dataset = EvalAttackDataset(data, split='test')
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
-        head_indices, tail_indices = head_tail_split(data.num_users, data.target_social_edge_index, tail_ratio=0.8)
+        head_indices, tail_indices = head_tail_split(
+            data.num_users, data.target_social_edge_index, tail_ratio=tail_ratio
+        )
 
         results = compute_attack_metrics(
             device=data.device,

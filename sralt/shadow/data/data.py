@@ -31,6 +31,7 @@ class ShadowData(TargetData):
         # Store metadata
         super().__init__(name=target_data.name, directory=target_data.directory)
 
+        self.target_model_name = target_model.__class__.__name__
         self.target_data_repr = repr(target_data)
         self.target_model_repr = repr(target_model)
 

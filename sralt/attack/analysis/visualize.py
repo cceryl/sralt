@@ -38,7 +38,7 @@ def visualize_attack_probs(attack_model: AttackModel, attack_data: AttackData, *
     head_indices_set = set(head_indices.cpu().tolist())
     tail_indices_set = set(tail_indices.cpu().tolist())
     if head_indices_set | tail_indices_set != set(range(attack_data.num_users)):
-        raise ValueError("Head and tail indices do not cover all users.")
+        raise ValueError('Head and tail indices do not cover all users.')
 
     # Collect predictions
     all_probs = []
@@ -79,7 +79,7 @@ def visualize_attack_probs(attack_model: AttackModel, attack_data: AttackData, *
             probs_list_map[(user in head_indices_set, label)].append(prob)
 
     if any(len(prob_list) == 0 for prob_list in probs_list_map.values()):
-        raise ValueError("Some groups have no samples for visualization.")
+        raise ValueError('Some groups have no samples for visualization.')
 
     # Create smooth curves using KDE
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
