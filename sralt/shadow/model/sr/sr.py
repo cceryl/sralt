@@ -19,7 +19,7 @@ from sralt.utils import timer, build_normalized_adj, calculate_model_fingerprint
 from sralt.utils import DataLoader, EarlyStopping
 
 
-@register_shadow_model('SR')
+@register_shadow_model('SemanticReconstruction')
 class SemanticReconstruction(ShadowModel):
     """
     Shadow model implementing the Semantic Reconstruction (SR) approach for social recommendation.
@@ -448,7 +448,7 @@ class SemanticReconstruction(ShadowModel):
 
     def __repr__(self) -> str:
         return (
-            f'SemanticReconstruction('
+            f'{self.__class__.__name__}('
             f'num_users={self.num_users}, '
             f'num_items={self.num_items}, '
             f'embed_dim={self.embed_dim}, '
