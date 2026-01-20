@@ -69,17 +69,18 @@ def sample_negative_items(
     """
     device = users.device
     num_samples = users.size(0)
+    users, edge_index = users.long(), edge_index.long()
 
     pos_users, pos_items = edge_index
     pos_idx = pos_users * num_items + pos_items
 
-    neg_items = torch.randint(num_items, (num_samples,), device=device) + num_users
+    neg_items = torch.randint(num_items, (num_samples,), device=device, dtype=torch.long) + num_users
     neg_idx = users * num_items + neg_items
 
     conflict_mask = torch.isin(neg_idx, pos_idx)
     conflicts = conflict_mask.nonzero(as_tuple=False).view(-1)
     while conflicts.numel() > 0:
-        replacement = torch.randint(num_items, (conflicts.size(0,),), device=device) + num_users
+        replacement = torch.randint(num_items, (conflicts.size(0),), device=device, dtype=torch.long) + num_users
         neg_items[conflicts] = replacement
         neg_idx = users[conflicts] * num_items + replacement
 
@@ -87,6 +88,51 @@ def sample_negative_items(
         conflicts = conflicts[conflict_mask]
 
     return neg_items
+
+
+def rebalanced_negative_sampling(
+    edge_index: torch.Tensor, num_nodes: int, num_neg_samples: int, alpha: float = 0.5
+) -> torch.Tensor:
+    """
+    Performs rebalanced negative sampling on the given edge index.
+    Positive edges and self-loops are excluded from negative samples.
+    The node weights are computed as (degree(node) + 1) ^ (-alpha).
+
+    :param edge_index: Undirected positive edge index tensor of shape (2, num_edges).
+    :param num_nodes: Total number of nodes.
+    :param num_neg_samples: Number of negative samples to generate.
+    :param alpha: Rebalancing exponent.
+    :return: A tensor of shape (2, num_neg_samples) containing negative edge indices.
+    """
+    device = edge_index.device
+    deg = degree(edge_index[0], num_nodes=num_nodes)
+    node_weights = (deg + 1).pow(-alpha)
+
+    # torch.multinomial does not support deterministic algorithms on GPU
+    if torch.are_deterministic_algorithms_enabled():
+        node_weights = node_weights.cpu()
+
+    pos_u, pos_v = edge_index.long()
+    self_loops = torch.arange(num_nodes, device=device, dtype=torch.long)
+    exclude_idx = torch.cat([pos_u * num_nodes + pos_v, self_loops * num_nodes + self_loops])
+
+    neg_u = torch.multinomial(node_weights, num_neg_samples, replacement=True).long().to(device)
+    neg_v = torch.multinomial(node_weights, num_neg_samples, replacement=True).long().to(device)
+    neg_idx = neg_u * num_nodes + neg_v
+
+    conflict_mask = torch.isin(neg_idx, exclude_idx)
+    conflicts = conflict_mask.nonzero(as_tuple=False).view(-1)
+    while conflicts.numel() > 0:
+        replacement_u = torch.multinomial(node_weights, conflicts.size(0), replacement=True).long().to(device)
+        replacement_v = torch.multinomial(node_weights, conflicts.size(0), replacement=True).long().to(device)
+        neg_u[conflicts] = replacement_u
+        neg_v[conflicts] = replacement_v
+        neg_idx = neg_u[conflicts] * num_nodes + neg_v[conflicts]
+
+        conflict_mask = torch.isin(neg_idx, exclude_idx)
+        conflicts = conflicts[conflict_mask]
+
+    return torch.stack([neg_u, neg_v], dim=0)
 
 
 class DataLoader(TorchDataLoader):

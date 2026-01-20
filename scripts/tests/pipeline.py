@@ -166,6 +166,8 @@ def attack_stage(
         train_config={
             'train_batch_size': 256,
             'val_batch_size': 2048,
+            'negative_ratio': 1.0,
+            'alpha': 0.0,
             'num_epochs': 50,
             'optimizer_cls': AdamWithGradientClipping,
             'optimizer_kwargs': {'lr': 1e-3, 'weight_decay': 1e-4, 'grad_clip_norm': 1.0},

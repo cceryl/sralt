@@ -199,7 +199,7 @@ class SemanticAugmentation(ShadowModel):
             case 'behavioral': return self.behavioral_branch.recommendation_loss(pos_scores, neg_scores, nodes, self.decay)
             case _: raise ValueError(f'Invalid stage "{stage}". Must be "social" or "behavioral".')
 
-    def build_augmented_social_adj(self, social_edge_index: torch.Tensor) -> torch.Tensor:
+    def augment_social_graph(self, social_edge_index: torch.Tensor) -> torch.Tensor:
         """
         Augments the social graph with bipartite edges between users and their semantic codes.
 
@@ -208,7 +208,8 @@ class SemanticAugmentation(ShadowModel):
         """
         device = social_edge_index.device
 
-        user_indices = torch.arange(self.num_users, device=device).repeat_interleave(self.rvq_num_quantizers)
+        num_codes_per_user = self.rvq_num_quantizers if self.ablation_code != 'one-to-one' else 1
+        user_indices = torch.arange(self.num_users, device=device).repeat_interleave(num_codes_per_user)
         code_indices = (self.user_codes + self.num_users + self.num_items).flatten()
 
         user_code_edge_index = torch.stack([user_indices, code_indices], dim=0)
@@ -364,7 +365,7 @@ class SemanticAugmentation(ShadowModel):
                     device=self.user_codes.device
                 )
 
-        augmented_social_edge_index = self.build_augmented_social_adj(data.social_edge_index)
+        augmented_social_edge_index = self.augment_social_graph(data.social_edge_index)
 
         self.train_stage(
             stage='social',
@@ -394,7 +395,7 @@ class SemanticAugmentation(ShadowModel):
         """
         self.eval()
 
-        augmented_social_edge_index = self.build_augmented_social_adj(data.social_edge_index)
+        augmented_social_edge_index = self.augment_social_graph(data.social_edge_index)
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
         test_dataset = EvalShadowDataset(data, split='test', num_negatives=test_num_negatives)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
@@ -417,7 +418,7 @@ class SemanticAugmentation(ShadowModel):
         """
         self.eval()
 
-        augmented_social_edge_index = self.build_augmented_social_adj(data.social_edge_index)
+        augmented_social_edge_index = self.augment_social_graph(data.social_edge_index)
         behavioral_edge_index = to_undirected(data.behavioral_edge_index)
         social_adj, behavioral_adj = self.build_adj(augmented_social_edge_index, behavioral_edge_index)
 

@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 from torch_geometric.utils import to_undirected, negative_sampling
 
 from .data import AttackData
+from sralt.utils import rebalanced_negative_sampling
 
 
 class TrainAttackDataset(Dataset):
@@ -12,20 +13,25 @@ class TrainAttackDataset(Dataset):
     Dataset for training social connection attacks.
     """
 
-    def __init__(self, attack_data: AttackData):
+    def __init__(self, attack_data: AttackData, negative_ratio: float, alpha: float = 0.0):
         """
         Initialize the training attack dataset.
 
         :param attack_data: The attack data containing social graph edges.
+        :param negative_ratio: The ratio of negative samples to generate relative to positive samples.
+        :param alpha: The rebalancing factor.
         """
         self.attack_data = attack_data
+        self.negative_ratio = negative_ratio
+        self.alpha = alpha
 
         self.pos_edge_index = attack_data.train_social_edge_index
         self.neg_edge_index = torch.tensor([], device=attack_data.device)
+        self.num_negatives = int(self.negative_ratio * self.pos_edge_index.size(1))
 
         self.edge_index = torch.tensor([], device=attack_data.device)
         self.labels = torch.cat(
-            [torch.ones(self.pos_edge_index.size(1)), torch.zeros(self.pos_edge_index.size(1))]
+            [torch.ones(self.pos_edge_index.size(1)), torch.zeros(self.num_negatives)]
         ).long().to(attack_data.device)
 
         self.access_counter = 0
@@ -36,7 +42,7 @@ class TrainAttackDataset(Dataset):
 
         :return: The length of the dataset.
         """
-        return self.pos_edge_index.size(1) * 2
+        return self.labels.size(0)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -46,13 +52,17 @@ class TrainAttackDataset(Dataset):
         :return: A tuple containing the two user indices and the label.
         """
         if self.access_counter == 0:
-            self.neg_edge_index = negative_sampling(
-                edge_index=to_undirected(self.pos_edge_index),
-                num_nodes=self.attack_data.num_users,
-                num_neg_samples=self.pos_edge_index.size(1),
-                method='dense',
-                force_undirected=False
-            )
+            sample_args = {
+                'edge_index': to_undirected(self.pos_edge_index),
+                'num_nodes': self.attack_data.num_users,
+                'num_neg_samples': self.num_negatives
+            }
+
+            if self.alpha == 0.0:
+                self.neg_edge_index = negative_sampling(**sample_args, method='dense')
+            else:
+                self.neg_edge_index = rebalanced_negative_sampling(**sample_args, alpha=self.alpha)
+
             self.edge_index = torch.cat([self.pos_edge_index, self.neg_edge_index], dim=1)
 
         self.access_counter = (self.access_counter + 1) % len(self)
@@ -60,7 +70,12 @@ class TrainAttackDataset(Dataset):
         return self.edge_index[0, idx], self.edge_index[1, idx], self.labels[idx]
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}(attack_data={repr(self.attack_data)})'
+        return (
+            f'{self.__class__.__name__}('
+            f'attack_data={repr(self.attack_data)}, '
+            f'negative_ratio={self.negative_ratio}, '
+            f'alpha={self.alpha})'
+        )
 
 
 class EvalAttackDataset(Dataset):

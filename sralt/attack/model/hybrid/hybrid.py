@@ -173,7 +173,7 @@ class HybridAttack(AttackModel):
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
     def train_model(
         self, *, data: AttackData, tail_ratio: float, writer: SummaryWriter | None,
-        train_batch_size: int, val_batch_size: int,
+        train_batch_size: int, val_batch_size: int, negative_ratio: float, alpha: float,
         num_epochs: int, optimizer_cls: type[optim.Optimizer], optimizer_kwargs: dict[str, Any],
         metrics: list[Metric], metric_aggregator: types.CodeType, early_stopping_kwargs: dict[str, Any],
         **kwargs
@@ -186,6 +186,8 @@ class HybridAttack(AttackModel):
         :param writer: Optional TensorBoard writer for logging.
         :param train_batch_size: Batch size for training.
         :param val_batch_size: Batch size for validation.
+        :param negative_ratio: The ratio of negative samples to positive samples in each epoch in training.
+        :param alpha: The rebalancing factor when sampling training data.
         :param num_epochs: Number of training epochs.
         :param optimizer_cls: Optimizer class.
         :param optimizer_kwargs: Keyword arguments for the optimizer.
@@ -199,7 +201,7 @@ class HybridAttack(AttackModel):
         self._min_degree = self._shadow_user_degrees.min()
         self._shadow_user_probs = self._shadow_user_degrees / self._shadow_user_degrees.sum()
 
-        train_dataset = TrainAttackDataset(data)
+        train_dataset = TrainAttackDataset(data, negative_ratio=negative_ratio, alpha=alpha)
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalAttackDataset(data, split='val')
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
