@@ -69,7 +69,7 @@ class EarlyStopping:
         :param metric: The current validation metric (e.g., loss or accuracy).
         :return: True if training should be stopped, False otherwise.
         """
-        if self.greater_is_better == (metric > self.best_metric + self.epsilon):
+        if self.greater_is_better == (metric > self.best_metric) and abs(metric - self.best_metric) > self.epsilon:
             self.counter = 0
             self.best_metric = metric
             self.best_state = copy.deepcopy(self.model.state_dict())

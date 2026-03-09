@@ -76,7 +76,7 @@ class SemanticAugmentationMHVQ(ShadowModel):
             dim=embed_dim,
             codebook_dim=embed_dim // 4,  # maybe let this be a param?
             heads=mhvq_num_quantizers,
-            separate_codebook_per_head=True,
+            separate_codebook_per_head=True,  # maybe let this be a param?
             codebook_size=mhvq_codebook_size
         )
 

@@ -460,10 +460,10 @@ def main():
     # Grid search for Semantic Augmentation (RPQ) shadow model
     param_grid = {
         'decay': [1e-3],
-        'rpq_num_quantizers': [2, 3, 4, 6, 8],
-        'rpq_codebook_size': [16, 32, 64, 256, 1024],
+        'rpq_num_quantizers': [6],  # [4, 6, 8, 10],
+        'rpq_codebook_size': [16],  # [8, 16, 32],
         'lr': [1e-2],
-        'ablation_code': ['base'],
+        'ablation_code': ['base', 'random'],
         'ablation_feature': ['base']
     }
 
