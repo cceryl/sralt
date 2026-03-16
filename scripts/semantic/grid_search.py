@@ -309,6 +309,10 @@ def logs_and_plots(
 
     logging.info(f"Results saved to {root_path}")
 
+    # log baseline metrics
+    logging.info(f"\nBaseline Shadow Metrics: {shadow_metrics_str(baseline_shadow_metrics)}")
+    logging.info(f"Baseline Attack Metrics:\n    {attack_metrics_str(baseline_attack_metrics)}")
+
     for rank, res in enumerate(sorted_results):
         config = res['config']
         shadow = res['shadow']
@@ -469,18 +473,29 @@ def main():
         'without_quantization': [False],
         'ablation_code': ['base'],
         'ablation_feature': ['base']
-    } # best param set for base
+    }  # best param set for base
 
-    param_grid = {
-        'decay': [1e-3],
+    best_random_param_grid = {
+        'decay': [1e-4],
         'rvq_num_quantizers': [8],
-        'rvq_codebook_size': [1024],
+        'rvq_codebook_size': [64],
         'commitment_weight': [0.0],
         'lr': [1e-2],
         'without_quantization': [False],
         'ablation_code': ['random'],
         'ablation_feature': ['base']
-    } # best param set for random codebook ablation
+    }  # best param set for random codebook ablation
+
+    param_grid = {
+        'decay': [1e-3],
+        'rvq_num_quantizers': [8],
+        'rvq_codebook_size': [256],
+        'commitment_weight': [0.0],
+        'lr': [1e-2],
+        'without_quantization': [False],
+        'ablation_code': ['base', 'random'],
+        'ablation_feature': ['base']
+    }
 
     keys, values = zip(*param_grid.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
