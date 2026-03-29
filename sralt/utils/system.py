@@ -1,4 +1,3 @@
-import os
 import time
 import types
 import typing
@@ -13,6 +12,7 @@ import torch
 import pynvml
 import pickle
 from cuda import cuda
+from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 
 from .model import tensor_fingerprint
@@ -92,8 +92,8 @@ def disk_cache(
             bound_args = signature.bind(*args, **kwargs)
             bound_args.apply_defaults()
 
-            cache_dir_formatted = cache_dir.format(**bound_args.arguments)
-            os.makedirs(cache_dir_formatted, exist_ok=True)
+            cache_dir_path = Path(cache_dir.format(**bound_args.arguments))
+            cache_dir_path.mkdir(parents=True, exist_ok=True)
 
             try:
                 key = (func.__name__, {k: get_object_repr(v) for k, v in bound_args.arguments.items()})
@@ -104,14 +104,14 @@ def disk_cache(
 
             key_bytes = pickle.dumps(key)
             key_hash = hashlib.md5(key_bytes).hexdigest()
-            cache_path = os.path.join(cache_dir_formatted, f'{key_hash}.pkl')
+            cache_path = cache_dir_path / f'{key_hash}.pkl'
             logging.debug(f'Key for function "{func.__name__}": {key}')
 
             cache_ns = types.SimpleNamespace(func=func, hash=key_hash, path=cache_path)
 
-            if os.path.exists(cache_path):
+            if cache_path.is_file():
                 logging.info(hit.format(**bound_args.arguments, __cache__=cache_ns))
-                with open(cache_path, 'rb') as f:
+                with cache_path.open('rb') as f:
                     cache_data = pickle.load(f)
 
                 if isinstance(cache_data, dict) and cache_data.get('key') == key:
@@ -122,7 +122,7 @@ def disk_cache(
             logging.info(miss.format(**bound_args.arguments, __cache__=cache_ns))
             result = func(*args, **kwargs)
 
-            with open(cache_path, 'wb') as f:
+            with cache_path.open('wb') as f:
                 pickle.dump({'key': key, 'result': result}, f)
             return result
 

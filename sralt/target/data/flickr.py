@@ -1,8 +1,8 @@
-import os
 import logging
 
 import torch
 import pandas as pd
+from pathlib import Path
 from torch_geometric.utils import to_undirected, coalesce
 
 from sralt.target.data import TargetData
@@ -29,16 +29,17 @@ class Flickr(TargetData):
         """
         super().__init__(name, directory)
         logging.info(f'Loading Flickr dataset from {directory}...')
+        path = Path(directory)
 
         self.min_social_connections = min_social_connections
         self.min_user_interactions = min_user_interactions
         self.min_item_interactions = min_item_interactions
 
         # Rows of (user_id, user_id, label=1)
-        social_df = pd.read_csv(os.path.join(directory, 'flickr.links'), sep='\t', header=None)
+        social_df = pd.read_csv(path / 'flickr.links', sep='\t', header=None)
         social_df.drop(columns=[2], inplace=True)
         # Rows of (user_id, item_id, label=1)
-        rating_df = pd.read_csv(os.path.join(directory, 'flickr.rating'), sep='\t', header=None)
+        rating_df = pd.read_csv(path / 'flickr.rating', sep='\t', header=None)
         rating_df.drop(columns=[2], inplace=True)
 
         # Convert to edge indices

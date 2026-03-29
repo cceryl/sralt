@@ -7,8 +7,10 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 import hydra
+from pathlib import Path
 from omegaconf import DictConfig
 from hydra.utils import instantiate
+from hydra.core.hydra_config import HydraConfig
 
 from sralt.target import load_target_data, load_target_model, test_target_model
 
@@ -53,7 +55,10 @@ def main(config: DictConfig):
         logging.info(f'Test {name}: {value:.4f}')
 
     logging.info(f'Model representation: {target_model}')
-    torch.save(target_model.state_dict(), 'model.pth')
+
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
+    torch.save(target_model.state_dict(), output_dir / 'model.pth')
+
     writer.close()
 
 
