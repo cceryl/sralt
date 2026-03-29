@@ -7,12 +7,11 @@ import numpy as np
 from numpy.typing import NDArray
 from torch_geometric.utils import to_undirected, coalesce
 
-from sralt.target.data import register_dataset, TargetData
+from sralt.target.data import TargetData
 from sralt.utils import leave_one_out_split
 
 
-@register_dataset('Ciao')
-class CiaoData(TargetData):
+class Ciao(TargetData):
     """
     The Ciao social recommendation dataset.
     """

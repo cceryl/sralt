@@ -45,8 +45,8 @@ def create_attack_model(name: str, user_feature_dim: int, config: dict[str, Any]
 
 @disk_cache(
     cache_dir='.cache/attack/model/{name}',
-    hit_log_format='Loading trained attack model "{name}" from cache at "{__cache__.path}".',
-    miss_log_format='Training attack model "{name}" and caching to "{__cache__.path}".'
+    hit='Loading trained attack model "{name}" from cache at "{__cache__.path}".',
+    miss='Training attack model "{name}" and caching to "{__cache__.path}".'
 )
 def load_attack_model(
     seed: int, deterministic: bool, device: torch.device,

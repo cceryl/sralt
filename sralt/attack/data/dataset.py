@@ -5,8 +5,6 @@ from torch.utils.data import Dataset
 from torch_geometric.utils import to_undirected, negative_sampling
 
 from .data import AttackData
-from sralt.utils import rebalanced_negative_sampling
-
 
 class TrainAttackDataset(Dataset):
     """
@@ -61,7 +59,8 @@ class TrainAttackDataset(Dataset):
             if self.alpha == 0.0:
                 self.neg_edge_index = negative_sampling(**sample_args, method='dense')
             else:
-                self.neg_edge_index = rebalanced_negative_sampling(**sample_args, alpha=self.alpha)
+                # Note: the rebalancing method is removed, but keep this branch for minimum code change.
+                self.neg_edge_index = negative_sampling(**sample_args, method='dense')
 
             self.edge_index = torch.cat([self.pos_edge_index, self.neg_edge_index], dim=1)
 

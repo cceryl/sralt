@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from . import register_attack_model
 from .base import AttackModel
 from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset
-from sralt.utils import timer, head_tail_split, calculate_model_fingerprint, compute_attack_metrics
+from sralt.utils import timer, head_tail_split, model_fingerprint, compute_attack_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
 
@@ -116,7 +116,7 @@ class SMIAAttack(AttackModel):
         metric_aggregator_fn: Callable[[float, list[float]], float] = eval(metric_aggregator)
 
         model_name = self.__class__.__name__
-        metrics_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
+        metric_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
         head_indices, tail_indices = head_tail_split(data.num_users, data.target_social_edge_index, tail_ratio)
 
         for epoch in range(1, num_epochs + 1):
@@ -153,7 +153,7 @@ class SMIAAttack(AttackModel):
             )
 
             def metrics_to_str(results: list[float]) -> str:
-                return ', '.join(f'{name}={value:.4f}' for name, value in zip(metrics_names, results))
+                return ', '.join(f'{name}={value:.4f}' for name, value in zip(metric_names, results))
 
             logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_to_str(all_results)}')
             logging.info(f'    Head users: {metrics_to_str(head_results)}')
@@ -161,7 +161,7 @@ class SMIAAttack(AttackModel):
 
             if writer is not None:
                 for group, results in [('All', all_results), ('Head', head_results), ('Tail', tail_results)]:
-                    for name, value in zip(metrics_names, results):
+                    for name, value in zip(metric_names, results):
                         writer.add_scalar(f'{model_name}/{name}/{group}', value, epoch)
 
             aggregate_metric = metric_aggregator_fn(average_loss, all_results)
@@ -213,5 +213,5 @@ class SMIAAttack(AttackModel):
             f'dropout={self.dropout}, '
             f'leaky_relu_slope={self.leaky_relu_slope}, '
             f'pos_weight={self.pos_weight}, '
-            f'fingerprint={calculate_model_fingerprint(self)})'
+            f'fingerprint={model_fingerprint(self)})'
         )

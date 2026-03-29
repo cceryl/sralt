@@ -9,7 +9,7 @@ from sralt.utils import sample_negative_items
 
 class TrainTargetDataset(Dataset):
     """
-    Dataset class for training data in target social recommendation models.
+    Dataset class for training data in target models.
     """
 
     def __init__(self, data: TargetData):
@@ -66,7 +66,7 @@ class TrainTargetDataset(Dataset):
 
 class EvalTargetDataset(Dataset):
     """
-    Dataset class for evaluation data in target social recommendation models.
+    Dataset class for evaluation data in target models.
     """
 
     def __init__(self, data: TargetData, split: Literal['val', 'test'] = 'val', num_negatives: int = 999):
@@ -110,12 +110,13 @@ class EvalTargetDataset(Dataset):
         """
         users = self.users.repeat_interleave(self.num_negatives)
 
-        placeholder = torch.empty((2, 0), dtype=torch.long, device=self.data.device)
-        conflict_edges = torch.cat([
-            self.data.behavioral_train_edge_index,
-            self.data.behavioral_val_edge_index,
-            self.data.behavioral_test_edge_index if self.split == 'test' else placeholder
-        ], dim=1)
+        if self.split == 'val':
+            conflict_edges = torch.cat([
+                self.data.behavioral_train_edge_index,
+                self.data.behavioral_val_edge_index
+            ], dim=1)
+        else:
+            conflict_edges = self.data.behavioral_edge_index
 
         return sample_negative_items(
             users=users,

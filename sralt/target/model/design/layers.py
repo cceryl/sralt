@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch_geometric.utils import scatter
 
-
 from sralt.utils import build_normalized_adj
 
 

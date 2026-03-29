@@ -7,8 +7,8 @@ from sralt.utils import disk_cache, set_seed
 
 @disk_cache(
     cache_dir='.cache/shadow/data/{target_data.name}-{target_model.__class__.__name__}',
-    hit_log_format='Loading cached shadow data {target_data.name} from "{__cache__.path}".',
-    miss_log_format='Generating shadow data from target data "{target_data.name}" and caching to "{__cache__.path}".'
+    hit='Loading cached shadow data {target_data.name} from "{__cache__.path}".',
+    miss='Generating shadow data from target data "{target_data.name}" and caching to "{__cache__.path}".'
 )
 def load_shadow_data(
     seed: int, deterministic: bool,

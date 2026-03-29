@@ -14,7 +14,7 @@ from torch_geometric.metrics.link_pred import LinkPredMetric
 
 from sralt.shadow.model import register_shadow_model, ShadowModel
 from sralt.shadow.data import ShadowData, TrainShadowDataset, EvalShadowDataset
-from sralt.utils import timer, build_normalized_adj, calculate_model_fingerprint, compute_recommendation_metrics
+from sralt.utils import timer, build_normalized_adj, model_fingerprint, compute_recommendation_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
 
@@ -248,7 +248,7 @@ class SemanticAugmentation(ShadowModel):
         :param writer: Optional TensorBoard writer for logging.
         """
         branch_name = f'{self.__class__.__name__}/{stage.capitalize()}Stage'
-        metrics_names = [
+        metric_names = [
             f'{typing.cast(str, metric.__class__.__name__).removeprefix("LinkPred")}@{metric.k}'
             for metric in metrics
         ]
@@ -284,19 +284,19 @@ class SemanticAugmentation(ShadowModel):
                 writer.add_scalar(f'{branch_name}/Loss/train', average_loss, epoch)
 
             self.eval()
-            metrics_results = compute_recommendation_metrics(
+            metric_results = compute_recommendation_metrics(
                 embeds=self.get_embedding(stage, social_edge_index, behavioral_edge_index),
                 metrics=metrics,
                 eval_loader=val_loader
             )
-            metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
-            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
+            metric_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metric_names, metric_results)])
+            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metric_str}')
 
             if writer is not None:
-                for name, value in zip(metrics_names, metrics_results):
+                for name, value in zip(metric_names, metric_results):
                     writer.add_scalar(f'{branch_name}/{name}/val', value, epoch)
 
-            aggregated_metric = metric_aggregator(average_loss, metrics_results)
+            aggregated_metric = metric_aggregator(average_loss, metric_results)
             if early_stopping.step(aggregated_metric):
                 break
 
@@ -400,13 +400,13 @@ class SemanticAugmentation(ShadowModel):
         test_dataset = EvalShadowDataset(data, split='test', num_negatives=test_num_negatives)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
-        metrics_results = compute_recommendation_metrics(
+        metric_results = compute_recommendation_metrics(
             embeds=self.get_embedding(stage, augmented_social_edge_index, undirected_behavioral_edge_index),
             metrics=metrics,
             eval_loader=test_loader
         )
 
-        return metrics_results
+        return metric_results
 
     @torch.no_grad()
     def get_user_features(self, data: ShadowData) -> torch.Tensor:
@@ -471,5 +471,5 @@ class SemanticAugmentation(ShadowModel):
             f'without_quantization={self.without_quantization}, '
             f'ablation_code={self.ablation_code}, '
             f'ablation_feature={self.ablation_feature}, '
-            f'fingerprint={calculate_model_fingerprint(self)})'
+            f'fingerprint={model_fingerprint(self)})'
         )

@@ -1,30 +1,30 @@
-import types
 import typing
 import logging
 from tqdm import tqdm
-from typing import Any, Callable
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.tensorboard import SummaryWriter
+from omegaconf import DictConfig
+from torch.optim import Optimizer
+from hydra.utils import instantiate
 from torch_geometric.utils import to_undirected
+from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.metrics.link_pred import LinkPredMetric
 
 from .twin import TwinGCN
 from .social import SocialGCN
 from .rating import RatingGCN
-from sralt.target.model import register_target_model, TargetModel
+from sralt.target.model import TargetModel
 from sralt.target.data import TargetData, TrainTargetDataset, EvalTargetDataset
-from sralt.utils import timer, calculate_model_fingerprint, compute_recommendation_metrics, recommend_items
+from sralt.utils import timer, model_fingerprint, compute_recommendation_metrics, recommend_items
 from sralt.utils import DataLoader, EarlyStopping
 
 
-@register_target_model('DESIGN')
 class DESIGN(TargetModel):
     """
-    Distillation Enhanced Social Graph Network for recommendation.
+    Distillation Enhanced Social Graph Network model.
+    Paper: 'Revisiting Graph based Social Recommendation: A Distillation Enhanced Social Graph Network'
     """
 
     def __init__(
@@ -120,13 +120,10 @@ class DESIGN(TargetModel):
 
         return loss
 
-    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
-    def train_model(
+    def _train_model(
         self, *, data: TargetData, writer: SummaryWriter | None,
-        train_batch_size: int, val_batch_size: int, val_num_negatives: int,
-        num_epochs: int, optimizer_cls: type[optim.Optimizer], optimizer_kwargs: dict[str, Any],
-        metrics: list[LinkPredMetric], metric_aggregator: types.CodeType, early_stopping_kwargs: dict[str, Any],
-        **kwargs
+        train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
+        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping
     ):
         """
         Train the DESIGN model.
@@ -137,24 +134,19 @@ class DESIGN(TargetModel):
         :param val_batch_size: Batch size for validation.
         :param val_num_negatives: Number of negative samples per positive sample during validation.
         :param num_epochs: Maximum number of training epochs.
-        :param optimizer_cls: Optimizer class to use.
-        :param optimizer_kwargs: Keyword arguments for the optimizer.
-        :param metrics: List of link prediction metrics to evaluate.
-        :param metric_aggregator: Source code of a Callable[[float, list[float]], float] that aggregates loss and metrics.
-        :param early_stopping_kwargs: Keyword arguments for the EarlyStopping helper.
+        :param optimizer: Optimizer for training.
+        :param metrics: List of link prediction metrics to compute during validation.
+        :param early_stopping: EarlyStopping helper for managing early stopping.
         """
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
+
         train_dataset = TrainTargetDataset(data)
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
-        optimizer = optimizer_cls(self.parameters(), **optimizer_kwargs)
-        early_stopping = EarlyStopping(self, **early_stopping_kwargs)
-        metric_aggregator_fn: Callable[[float, list[float]], float] = eval(metric_aggregator)
-
         model_name = self.__class__.__name__
-        metrics_names = [
+        metric_names = [
             f'{typing.cast(str, metric.__class__.__name__).removeprefix("LinkPred")}@{metric.k}'
             for metric in metrics
         ]
@@ -188,23 +180,57 @@ class DESIGN(TargetModel):
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
             self.eval()
-            metrics_results = compute_recommendation_metrics(
+            metric_results = compute_recommendation_metrics(
                 embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
                 metrics=metrics,
                 eval_loader=val_loader
             )
-            metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
-            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
+            metric_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metric_names, metric_results)])
+            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metric_str}')
 
             if writer is not None:
-                for name, value in zip(metrics_names, metrics_results):
+                for name, value in zip(metric_names, metric_results):
                     writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
 
-            aggregated_metric = metric_aggregator_fn(average_loss, metrics_results)
-            if early_stopping.step(aggregated_metric):
+            if early_stopping.step(sum(metric_results)):
                 break
 
         early_stopping.load_best_state()
+
+    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
+    def train_model(
+        self, *, data: TargetData, writer: SummaryWriter | None,
+        train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
+        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig,
+        **kwargs
+    ):
+        """
+        Train the DESIGN model.
+
+        :param data: The target dataset.
+        :param writer: Optional TensorBoard writer for logging.
+        :param train_batch_size: Batch size for training.
+        :param val_batch_size: Batch size for validation.
+        :param val_num_negatives: Number of negative samples per positive sample during validation.
+        :param num_epochs: Maximum number of training epochs.
+        :param optimizer: Instantiable optimizer config.
+        :param metrics: List of link prediction metric instantiation configs.
+        :param early_stopping: Instantiable EarlyStopping helper config.
+        """
+        if kwargs:
+            logging.warning(f'Ignoring unexpected additional training config parameters: {kwargs}')
+
+        self._train_model(
+            data=data,
+            writer=writer,
+            train_batch_size=train_batch_size,
+            val_batch_size=val_batch_size,
+            val_num_negatives=val_num_negatives,
+            num_epochs=num_epochs,
+            optimizer=instantiate(optimizer, params=self.parameters()),
+            metrics=instantiate(metrics),
+            early_stopping=instantiate(early_stopping, model=self)
+        )
 
     @torch.no_grad()
     def test_model(
@@ -216,24 +242,26 @@ class DESIGN(TargetModel):
 
         :param data: The target dataset.
         :param metrics: A list of link prediction metrics to compute.
-        :param writer: Optional TensorBoard writer for logging.
         :param test_batch_size: Batch size for testing.
         :param test_num_negatives: Number of negative samples per positive sample during testing.
         :return: A list of metric values.
         """
+        if kwargs:
+            logging.warning(f'Ignoring unexpected additional testing config parameters: {kwargs}')
+
         self.eval()
 
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
         test_dataset = EvalTargetDataset(data, split='test', num_negatives=test_num_negatives)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
-        metrics_results = compute_recommendation_metrics(
+        metric_results = compute_recommendation_metrics(
             embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
             metrics=metrics,
             eval_loader=test_loader
         )
 
-        return metrics_results
+        return metric_results
 
     @torch.no_grad()
     def recommend(self, *, data: TargetData, num_recommendations: int, batch_size: int = 1024) -> torch.Tensor:
@@ -268,5 +296,5 @@ class DESIGN(TargetModel):
             f'item_fusion_layers={self.twin.item_fusion_layers}, '
             f'decay={self.decay}, '
             f'distill_weight={self.distill_weight}, '
-            f'fingerprint={calculate_model_fingerprint(self)})'
+            f'fingerprint={model_fingerprint(self)})'
         )

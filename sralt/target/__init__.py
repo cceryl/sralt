@@ -1,9 +1,7 @@
-from . import datasets
-from .data import load_target_data, TargetData, TrainTargetDataset, EvalTargetDataset
-from .model import create_target_model, load_target_model, test_target_model, TargetModel
+from .data import TargetData, load_target_data, TrainTargetDataset, EvalTargetDataset
+from .model import TargetModel, create_target_model, load_target_model, test_target_model
 
 __all__ = [
-    'datasets',
-    'load_target_data', 'TargetData', 'TrainTargetDataset', 'EvalTargetDataset',
-    'create_target_model', 'load_target_model', 'test_target_model', 'TargetModel'
+    'TargetData', 'load_target_data', 'TrainTargetDataset', 'EvalTargetDataset',
+    'TargetModel', 'create_target_model', 'load_target_model', 'test_target_model'
 ]

@@ -47,8 +47,8 @@ def create_shadow_model(name: str, num_users: int, num_items: int, config: dict[
 
 @disk_cache(
     cache_dir='.cache/shadow/model/{name}',
-    hit_log_format='Loading trained shadow model "{name}" from cache at "{__cache__.path}".',
-    miss_log_format='Training shadow model "{name}" and caching to "{__cache__.path}".'
+    hit='Loading trained shadow model "{name}" from cache at "{__cache__.path}".',
+    miss='Training shadow model "{name}" and caching to "{__cache__.path}".'
 )
 def load_shadow_model(
     seed: int, deterministic: bool, device: torch.device,

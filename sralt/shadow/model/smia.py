@@ -14,7 +14,7 @@ from torch_geometric.metrics.link_pred import LinkPredMetric
 from . import register_shadow_model
 from .base import ShadowModel
 from sralt.shadow.data import ShadowData, TrainShadowDataset, EvalShadowDataset
-from sralt.utils import timer, build_normalized_adj, calculate_model_fingerprint, compute_recommendation_metrics
+from sralt.utils import timer, build_normalized_adj, model_fingerprint, compute_recommendation_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
 
@@ -169,7 +169,7 @@ class SMIAShadow(ShadowModel):
         metric_aggregator_fn: Callable[[float, list[float]], float] = eval(metric_aggregator)
 
         model_name = self.__class__.__name__
-        metrics_names = [
+        metric_names = [
             f'{typing.cast(str, metric.__class__.__name__).removeprefix("LinkPred")}@{metric.k}'
             for metric in metrics
         ]
@@ -203,19 +203,19 @@ class SMIAShadow(ShadowModel):
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
             self.eval()
-            metrics_results = compute_recommendation_metrics(
+            metric_results = compute_recommendation_metrics(
                 embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
                 metrics=metrics,
                 eval_loader=val_loader
             )
-            metrics_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metrics_names, metrics_results)])
-            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metrics_str}')
+            metric_str = ', '.join([f'{name}={value:.4f}' for name, value in zip(metric_names, metric_results)])
+            logging.info(f'Evaluation at epoch {epoch:04d}: loss={average_loss:.4f}, {metric_str}')
 
             if writer is not None:
-                for name, value in zip(metrics_names, metrics_results):
+                for name, value in zip(metric_names, metric_results):
                     writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
 
-            aggregated_metric = metric_aggregator_fn(average_loss, metrics_results)
+            aggregated_metric = metric_aggregator_fn(average_loss, metric_results)
             if early_stopping.step(aggregated_metric):
                 break
 
@@ -242,13 +242,13 @@ class SMIAShadow(ShadowModel):
         test_dataset = EvalShadowDataset(data, split='test', num_negatives=test_num_negatives)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
-        metrics_results = compute_recommendation_metrics(
+        metric_results = compute_recommendation_metrics(
             embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
             metrics=metrics,
             eval_loader=test_loader
         )
 
-        return metrics_results
+        return metric_results
 
     @torch.no_grad()
     def get_user_features(self, data: ShadowData) -> torch.Tensor:
@@ -294,5 +294,5 @@ class SMIAShadow(ShadowModel):
             f'embed_dim={self.embed_dim}, '
             f'num_layers={self.num_layers}, '
             f'decay={self.decay}, '
-            f'fingerprint={calculate_model_fingerprint(self)})'
+            f'fingerprint={model_fingerprint(self)})'
         )

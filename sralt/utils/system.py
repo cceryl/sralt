@@ -15,8 +15,7 @@ import pickle
 from cuda import cuda
 from torch.utils.tensorboard import SummaryWriter
 
-
-from .model import calculate_tensor_fingerprint
+from .model import tensor_fingerprint
 
 
 def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 10) -> str:
@@ -36,17 +35,14 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
         visited = set()
     if id(obj) in visited:
         return '...'
-    if isinstance(obj, (list, tuple, set, dict, frozenset, types.FunctionType)):
+    if isinstance(obj, (list, tuple, set, dict, frozenset)):
         visited.add(id(obj))
-
-    if isinstance(obj, types.FunctionType):
-        return inspect.getsource(obj)
 
     if isinstance(obj, SummaryWriter):
         return 'SummaryWriter'
 
     if isinstance(obj, torch.Tensor):
-        return f'torch.Tensor(fingerprint={calculate_tensor_fingerprint(obj)})'
+        return f'torch.Tensor(fingerprint={tensor_fingerprint(obj)})'
 
     if isinstance(obj, (list, tuple, set, frozenset)):
         elements = [get_object_repr(e, visited, max_depth) for e in obj]
@@ -61,21 +57,22 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
 
     if isinstance(obj, dict):
         items = [
-            f'{get_object_repr(k, visited, max_depth)}: {get_object_repr(v, visited, max_depth)}' for k, v in obj.items()
+            f'{get_object_repr(k, visited, max_depth)}: {get_object_repr(v, visited, max_depth)}'
+            for k, v in obj.items()
         ]
         return f'{{{", ".join(items)}}}'
 
     repr_str = repr(obj)
     if ('at 0x' in repr_str):
-        raise NotImplementedError(f'Cannot cache function with unrepresentable arguments: {repr_str}')
+        raise NotImplementedError(f'Object {repr_str} is not representable.')
 
     return repr_str
 
 
 def disk_cache(
     cache_dir: str,
-    hit_log_format: str = 'Loading cached result of function "{__cache__.func.__name__}" from "{__cache__.path}".',
-    miss_log_format: str = 'Computing result of function "{__cache__.func.__name__}" and caching to "{__cache__.path}".'
+    hit: str = 'Loading cached result of function "{__cache__.func.__name__}" from "{__cache__.path}".',
+    miss: str = 'Computing result of function "{__cache__.func.__name__}" and caching to "{__cache__.path}".'
 ) -> Callable:
     """
     A decorator to cache the result of a function to disk.
@@ -83,8 +80,8 @@ def disk_cache(
     Note that the decorated function should not have a parameter named '__cache__'.
 
     :param cache_dir: Directory where cached results will be stored.
-    :param hit_log_format: Log format string for cache hits.
-    :param miss_log_format: Log format string for cache misses.
+    :param hit: Log format string for cache hits.
+    :param miss: Log format string for cache misses.
     :return: The decorated function with caching capability.
     """
     def decorator(func: Callable) -> Callable:
@@ -98,19 +95,22 @@ def disk_cache(
             cache_dir_formatted = cache_dir.format(**bound_args.arguments)
             os.makedirs(cache_dir_formatted, exist_ok=True)
 
-            key = (func.__name__, {k: get_object_repr(v) for k, v in bound_args.arguments.items()})
+            try:
+                key = (func.__name__, {k: get_object_repr(v) for k, v in bound_args.arguments.items()})
+            except NotImplementedError as e:
+                raise RuntimeError(
+                    f'Failed to generate cache key for function "{func.__name__}", arguments: {bound_args.arguments}.'
+                ) from e
+
             key_bytes = pickle.dumps(key)
             key_hash = hashlib.md5(key_bytes).hexdigest()
             cache_path = os.path.join(cache_dir_formatted, f'{key_hash}.pkl')
             logging.debug(f'Key for function "{func.__name__}": {key}')
 
-            cache_namespace = types.SimpleNamespace()
-            cache_namespace.func = func
-            cache_namespace.hash = key_hash
-            cache_namespace.path = cache_path
+            cache_ns = types.SimpleNamespace(func=func, hash=key_hash, path=cache_path)
 
             if os.path.exists(cache_path):
-                logging.info(hit_log_format.format(**bound_args.arguments, __cache__=cache_namespace))
+                logging.info(hit.format(**bound_args.arguments, __cache__=cache_ns))
                 with open(cache_path, 'rb') as f:
                     cache_data = pickle.load(f)
 
@@ -119,7 +119,7 @@ def disk_cache(
 
                 logging.warning(f'Hash collision detected for cache file "{cache_path}". Recomputing the result.')
 
-            logging.info(miss_log_format.format(**bound_args.arguments, __cache__=cache_namespace))
+            logging.info(miss.format(**bound_args.arguments, __cache__=cache_ns))
             result = func(*args, **kwargs)
 
             with open(cache_path, 'wb') as f:
@@ -191,13 +191,13 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.devi
         pynvml.nvmlShutdown()
 
 
-def timer(log_format: str = 'Function "{__timer__.func.__name__}" took {__timer__.elapsed:.2f} seconds.') -> Callable:
+def timer(format: str = 'Function "{__timer__.func.__name__}" took {__timer__.elapsed:.2f} seconds.') -> Callable:
     """
-    A decorator to measure execution time of a function.
+    A decorator to measure execution time of a synchronous function.
     Available placeholders are arguments of the decorated function and 'func', 'start', 'end', 'elapsed' in '__timer__' namespace.
     Note that the decorated function should not have a parameter named '__timer__'.
 
-    :param log_format: The format string for logging.
+    :param format: The format string for logging.
     :return: The decorated function with timer.
     """
     def decorator(func: Callable) -> Callable:
@@ -208,17 +208,26 @@ def timer(log_format: str = 'Function "{__timer__.func.__name__}" took {__timer_
             bound_args = signature.bind(*args, **kwargs)
             bound_args.apply_defaults()
 
-            start = time.time()
-            result = func(*args, **kwargs)
-            end = time.time()
+            start_time = time.time()
+            start_counter = time.perf_counter()
 
-            timer_namespace = types.SimpleNamespace()
-            timer_namespace.func = func
-            timer_namespace.start = start
-            timer_namespace.end = end
-            timer_namespace.elapsed = end - start
+            try:
+                result = func(*args, **kwargs)
+            except:
+                logging.error(f'Timer failed for function "{func.__name__}" due to an exception.')
+                raise
 
-            logging.info(log_format.format(**bound_args.arguments, __timer__=timer_namespace))
+            end_time = time.time()
+            end_counter = time.perf_counter()
+
+            timer_ns = types.SimpleNamespace(
+                func=func,
+                start=start_time,
+                end=end_time,
+                elapsed=end_counter - start_counter
+            )
+
+            logging.info(format.format(**bound_args.arguments, __timer__=timer_ns))
             return result
 
         return wrapper

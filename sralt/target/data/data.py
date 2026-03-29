@@ -3,12 +3,16 @@ from dataclasses import dataclass
 from typing_extensions import Self
 
 import torch
+from omegaconf import DictConfig
+from hydra.utils import instantiate
+
+from sralt.utils import disk_cache, set_seed
 
 
 @dataclass(init=False)
 class TargetData(ABC):
     """
-    The graph data for training target social recommendation models.
+    The graph data for training target models.
     """
 
     name: str
@@ -80,7 +84,7 @@ class TargetData(ABC):
 
     def to(self, device: torch.device) -> Self:
         """
-        Move all tensors to the specified device.
+        Move all tensors to the specified device in-place.
 
         :param device: The target device.
         :return: The TargetData object on the specified device.
@@ -105,3 +109,21 @@ class TargetData(ABC):
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(name={self.name}, directory={self.directory})'
+
+
+@disk_cache(
+    cache_dir='.cache/target/data/{config.name}',
+    hit='Load cached target data "{config.name}" from "{__cache__.path}".',
+    miss='Generate target data "{config.name}" from {config.directory} and cache to "{__cache__.path}".'
+)
+def load_target_data(seed: int, deterministic: bool, config: DictConfig) -> TargetData:
+    """
+    Load a dataset by provided data loader.
+
+    :param seed: The random seed for dataset initialization.
+    :param deterministic: Whether to use deterministic behavior for dataset initialization.
+    :param config: The instantiable configuration for the dataset.
+    """
+    set_seed(seed, deterministic)
+
+    return instantiate(config)

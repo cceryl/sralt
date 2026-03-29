@@ -1,0 +1,64 @@
+defaults:
+  - target: default
+  - _self_
+
+seed: 42
+deterministic: True
+device:
+  _target_: sralt.utils.get_device
+  allow_share: True
+  allow_cpu: False
+writer:
+  _target_: torch.utils.tensorboard.SummaryWriter
+  log_dir: ${hydra:runtime.output_dir}/tensorboard
+
+filter_warnings:
+  - _target_: warnings.filterwarnings
+    action: ignore
+    message: "Sparse CSR tensor support is in beta state."
+  - _target_: warnings.filterwarnings
+    action: ignore
+    message: "You are trying to use a metric in deterministic mode on GPU that uses `torch.cumsum`, which is currently not supported."
+
+hydra:
+  run:
+    dir: runs/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: runs/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+  job_logging:
+    version: 1
+
+    formatters:
+      console:
+        (): colorlog.ColoredFormatter
+        format: "%(black)s[%(asctime)s] [%(filename)s:%(lineno)d] %(log_color)s%(message)s%(reset)s"
+        datefmt: "%Y-%m-%d %H:%M:%S"
+
+        log_colors:
+          DEBUG: green
+          INFO: cyan
+          WARNING: yellow
+          ERROR: red
+          CRITICAL: purple
+
+      file:
+        class: logging.Formatter
+        format: "[%(asctime)s] [%(levelname)-8s] [%(filename)s:%(lineno)d] %(message)s"
+        datefmt: "%Y-%m-%d %H:%M:%S"
+
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: console
+        stream: ext://sys.stdout
+
+      file:
+        class: logging.FileHandler
+        formatter: file
+        filename: ${hydra:runtime.output_dir}/${hydra:job.name}.log
+
+    root:
+      level: INFO
+      handlers: [console, file]

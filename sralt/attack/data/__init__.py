@@ -8,8 +8,8 @@ from sralt.utils import disk_cache, set_seed
 
 @disk_cache(
     cache_dir='.cache/attack/data/{target_data.name}-{shadow_data.target_model_name}-{shadow_model.__class__.__name__}',
-    hit_log_format='Loading cached attack data {target_data.name} from "{__cache__.path}".',
-    miss_log_format='Generating attack data with data "{target_data.name}" and caching to "{__cache__.path}".'
+    hit='Loading cached attack data {target_data.name} from "{__cache__.path}".',
+    miss='Generating attack data with data "{target_data.name}" and caching to "{__cache__.path}".'
 )
 def load_attack_data(
     seed: int, deterministic: bool,

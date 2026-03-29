@@ -2,7 +2,6 @@ import os
 import copy
 import random
 import logging
-from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -125,48 +124,3 @@ class AdamWithGradientClipping(optim.AdamW):
         """
         torch.nn.utils.clip_grad_norm_(self.param_groups[0]['params'], self.grad_clip_norm)
         super().step(closure)
-
-
-class FocalLoss(nn.Module):
-    """
-    Focal Loss for addressing class imbalance.
-    """
-
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: Literal['mean', 'sum', 'none'] = 'mean'):
-        """
-        Initialize the FocalLoss.
-
-        :param alpha: Weighting factor for the rare class.
-        :param gamma: Focusing parameter to reduce the relative loss for well-classified examples.
-        :param reduction: Specifies the reduction to apply to the output.
-        """
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.bce_loss = nn.BCEWithLogitsLoss(reduction='none')
-
-    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the Focal Loss.
-
-        :param inputs: Predictions (logits).
-        :param targets: Ground truth labels.
-        :return: Computed Focal Loss.
-        """
-        bce_loss: torch.Tensor = self.bce_loss(inputs, targets)
-        probas = torch.sigmoid(inputs)
-        p_t = probas * targets + (1 - probas) * (1 - targets)
-        focal_factor = (1 - p_t) ** self.gamma
-
-        loss = self.alpha * focal_factor * bce_loss
-
-        match self.reduction:
-            case 'mean':
-                return loss.mean()
-            case 'sum':
-                return loss.sum()
-            case 'none':
-                return loss
-            case _:
-                raise ValueError(f'Invalid reduction type: {self.reduction}')

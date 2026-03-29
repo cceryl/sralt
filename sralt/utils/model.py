@@ -5,8 +5,8 @@ from typing import Literal
 import torch
 import torch.nn as nn
 from numpy.typing import NDArray
-from torch_geometric.utils import degree, add_self_loops as add_self_loops_fn
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
+from torch_geometric.utils import degree, add_self_loops as add_self_loops_fn
 
 
 def build_normalized_adj(
@@ -64,7 +64,7 @@ def build_normalized_adj(
     ).coalesce().to_sparse_csr()
 
 
-def calculate_tensor_fingerprint(tensor: torch.Tensor) -> str:
+def tensor_fingerprint(tensor: torch.Tensor) -> str:
     """
     Calculate a fingerprint for the given tensor.
 
@@ -78,7 +78,7 @@ def calculate_tensor_fingerprint(tensor: torch.Tensor) -> str:
     return hasher.hexdigest()
 
 
-def calculate_model_fingerprint(model: nn.Module) -> str:
+def model_fingerprint(model: nn.Module) -> str:
     """
     Calculate a fingerprint for the given model based on its parameters.
 

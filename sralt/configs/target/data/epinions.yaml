@@ -1,0 +1,7 @@
+_target_: sralt.target.data.epinions.Epinions
+name: Epinions
+directory: ./data/epinions
+min_rating: 2
+min_social_connections: 1
+min_user_interactions: 5
+min_item_interactions: 1

@@ -1,0 +1,28 @@
+name: DESIGN
+
+attribute:
+  _target_: sralt.target.model.design.DESIGN
+  embed_dim: 64
+  user_fusion_layers: [0, 1, 2]
+  item_fusion_layers: [0, 1, 2]
+  decay: 5e-3
+  distill_weight: 1e-2
+
+train:
+  train_batch_size: 32768
+  val_batch_size: 4096
+  val_num_negatives: 999
+  num_epochs: 300
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-2
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 10
+    greater_is_better: True
+    epsilon: 1e-5
