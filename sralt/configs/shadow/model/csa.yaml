@@ -9,7 +9,7 @@ attribute:
   codebook_size: 256
   commitment_weight: 0.0
   quantization: True
-  feature: 'both'
+  feature: both
 
 train:
   train_batch_size: 8192

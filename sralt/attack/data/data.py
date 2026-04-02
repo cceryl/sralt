@@ -3,10 +3,11 @@ from dataclasses import dataclass
 from typing_extensions import Self
 
 import torch
+from omegaconf import DictConfig
 
-from sralt.target.data import TargetData
-from sralt.shadow.data import ShadowData
-from sralt.shadow.model import ShadowModel
+from sralt.target import TargetData
+from sralt.shadow import ShadowData, ShadowModel
+from sralt.utils import disk_cache, set_seed
 
 
 @dataclass
@@ -65,7 +66,7 @@ class AttackData:
 
     def to(self, device: torch.device) -> Self:
         """
-        Move all tensors to the specified device.
+        Move all tensors to the specified device in-place.
 
         :param device: The target device.
         :return: The AttackData object on the specified device.
@@ -92,7 +93,7 @@ class AttackData:
         :param val_ratio: The ratio of validation edges in the shadow social graph.
         """
         if repr(target_data) != shadow_data.target_data_repr:
-            raise ValueError('The target data of shadow data must match the provided target data.')
+            raise ValueError('The shadow data must be generated from the same target data.')
 
         self.name = target_data.name
         self.directory = target_data.directory
@@ -147,3 +148,33 @@ class AttackData:
             f'shadow_model={self.shadow_model_repr}, '
             f'val_ratio={self.val_ratio})'
         )
+
+
+@disk_cache(
+    cache_dir='.cache/attack/data/{target_data.name}/{shadow_data.target_model_name}/{shadow_model.__class__.__name__}',
+    hit='Load cached attack data "{target_data.name}" from "{__cache__.path}".',
+    miss='Generate attack data from dataset "{target_data.name}", shadow model "{shadow_model.__class__.__name__}" and cache to "{__cache__.path}".'
+)
+def load_attack_data(
+    seed: int, deterministic: bool,
+    target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel, config: DictConfig
+) -> AttackData:
+    """
+    Load attack data from target data, shadow data and shadow model.
+
+    :param seed: The random seed for attack data generation.
+    :param deterministic: Whether to use deterministic behavior for attack data generation.
+    :param target_data: The target data.
+    :param shadow_data: The shadow data.
+    :param shadow_model: The shadow model.
+    :param config: The configuration for attack data generation.
+    :return: An instance of the attack data.
+    """
+    set_seed(seed, deterministic=deterministic)
+
+    return AttackData(
+        target_data=target_data,
+        shadow_data=shadow_data,
+        shadow_model=shadow_model,
+        val_ratio=config.val_ratio
+    )

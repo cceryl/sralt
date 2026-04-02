@@ -96,7 +96,7 @@ def create_shadow_model(
 @disk_cache(
     cache_dir='.cache/shadow/model/{config.name}',
     hit='Load trained shadow model "{config.name}" from cache at "{__cache__.path}".',
-    miss='Train shadow model "{config.name}" and caching to "{__cache__.path}".'
+    miss='Train shadow model "{config.name}" and cache to "{__cache__.path}".'
 )
 def load_shadow_model(
     seed: int, deterministic: bool, device: torch.device,
@@ -112,9 +112,8 @@ def load_shadow_model(
     :param seed: The random seed for training.
     :param deterministic: Whether to use deterministic algorithms.
     :param device: The device to load the model onto.
-    :param name: The name of the model.
     :param config: The model intantiation and training configs.
-    :param data: The target dataset.
+    :param data: The shadow dataset.
     :param writer: Optional TensorBoard writer for logging.
     :return: A trained instance of the model.
     """

@@ -1,0 +1,30 @@
+name: MLP
+
+attribute:
+  _target_: sralt.attack.model.mlp.MLP
+  dropout: 0.5
+  leaky_relu_slope: 0.2
+  pos_weight: 10.0
+
+train:
+  train_batch_size: 512
+  val_batch_size: 2048
+  negative_ratio: 1.0
+  num_epochs: 50
+  optimizer:
+    _target_: sralt.utils.AdamWithGradientClipping
+    lr: 1e-3
+    weight_decay: 1e-4
+    grad_clip_norm: 1.0
+  metrics:
+    - _target_: torchmetrics.AUROC
+      task: binary
+    - _target_: torchmetrics.F1Score
+      task: binary
+    - _target_: sralt.utils.TPRatFPR
+      target_fpr: 0.01
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 5
+    greater_is_better: True
+    epsilon: 1e-5

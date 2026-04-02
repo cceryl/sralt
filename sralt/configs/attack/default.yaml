@@ -1,0 +1,6 @@
+defaults:
+  - data: default
+  - model: "???"
+  - test: default
+
+tail_ratio: 0.8

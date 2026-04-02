@@ -1,9 +1,7 @@
-from .data import load_attack_data, AttackData, TrainAttackDataset, EvalAttackDataset
-from .model import create_attack_model, load_attack_model, test_attack_model, AttackModel
-from .analysis import visualize_attack_probs
+from .data import AttackData, load_attack_data, TrainAttackDataset, EvalAttackDataset
+from .model import AttackModel, create_attack_model, load_attack_model, test_attack_model
 
 __all__ = [
-    'load_attack_data', 'AttackData', 'TrainAttackDataset', 'EvalAttackDataset',
-    'create_attack_model', 'load_attack_model', 'test_attack_model', 'AttackModel',
-    'visualize_attack_probs'
+    'AttackData', 'load_attack_data', 'TrainAttackDataset', 'EvalAttackDataset',
+    'AttackModel', 'create_attack_model', 'load_attack_model', 'test_attack_model'
 ]

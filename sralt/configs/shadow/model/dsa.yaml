@@ -6,9 +6,9 @@ attribute:
   num_layers: 2
   decay: 1e-2
   top_k: 8
-  sim: 'cosine'
+  sim: cosine
   undirected: True
-  feature: 'both'
+  feature: both
 
 train:
   train_batch_size: 8192

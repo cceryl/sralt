@@ -1,30 +1,26 @@
-import types
 import logging
-from typing import Any, Callable
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torchmetrics import Metric
+from omegaconf import DictConfig
+from torch.optim import Optimizer
+from hydra.utils import instantiate
 from torch.utils.tensorboard import SummaryWriter
 
-from . import register_attack_model
 from .base import AttackModel
 from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset
 from sralt.utils import timer, head_tail_split, model_fingerprint, compute_attack_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
 
-@register_attack_model('SMIA')
-class SMIAAttack(AttackModel):
+class MLP(AttackModel):
     """
-    SMIA attack model for social connection prediction.
+    MLP-based classifier for social connection attack.
     """
 
-    def __init__(self, user_feature_dim: int, dropout: float = 0.5, leaky_relu_slope: float = 0.2, pos_weight: float = 10.0):
+    def __init__(self, user_feature_dim: int, dropout: float, leaky_relu_slope: float, pos_weight: float):
         """
-        Initialize the SMIA attack model.
-
         :param user_feature_dim: Dimension of user features.
         :param dropout: Dropout rate.
         :param leaky_relu_slope: Slope for LeakyReLU activation.
@@ -37,15 +33,15 @@ class SMIAAttack(AttackModel):
 
         self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
         self.net = nn.Sequential(
-            nn.Linear(4 * user_feature_dim, 4 * user_feature_dim, bias=True),
+            nn.Linear(4 * user_feature_dim, 4 * user_feature_dim),
             nn.BatchNorm1d(4 * user_feature_dim),
             nn.LeakyReLU(leaky_relu_slope),
             nn.Dropout(dropout),
-            nn.Linear(4 * user_feature_dim, 2 * user_feature_dim, bias=True),
+            nn.Linear(4 * user_feature_dim, 2 * user_feature_dim),
             nn.BatchNorm1d(2 * user_feature_dim),
             nn.LeakyReLU(leaky_relu_slope),
             nn.Dropout(dropout),
-            nn.Linear(2 * user_feature_dim, 1, bias=True)
+            nn.Linear(2 * user_feature_dim, 1)
         )
 
     def forward(self, user_edge_index: torch.Tensor, user_features: torch.Tensor) -> torch.Tensor:
@@ -81,39 +77,29 @@ class SMIAAttack(AttackModel):
         probs = torch.sigmoid(logits)
         return probs
 
-    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
-    def train_model(
+    def _train_model(
         self, *, data: AttackData, tail_ratio: float, writer: SummaryWriter | None,
-        train_batch_size: int, val_batch_size: int, negative_ratio: float, alpha: float,
-        num_epochs: int, optimizer_cls: type[optim.Optimizer], optimizer_kwargs: dict[str, Any],
-        metrics: list[Metric], metric_aggregator: types.CodeType, early_stopping_kwargs: dict[str, Any],
-        **kwargs
+        train_batch_size: int, val_batch_size: int, negative_ratio: float, num_epochs: int,
+        optimizer: Optimizer, metrics: list[Metric], early_stopping: EarlyStopping
     ):
         """
         Train the attack model.
 
         :param data: The attack dataset.
-        :param tail_ratio: The ratio to be considered as tail users.
+        :param tail_ratio: Proportion of users classified as long-tail users based on social connection counts.
         :param writer: Optional TensorBoard writer for logging.
         :param train_batch_size: Batch size for training.
         :param val_batch_size: Batch size for validation.
         :param negative_ratio: The ratio of negative samples to positive samples in each epoch in training.
-        :param alpha: The rebalancing factor when sampling training data.
         :param num_epochs: Number of training epochs.
-        :param optimizer_cls: Optimizer class.
-        :param optimizer_kwargs: Keyword arguments for the optimizer.
-        :param metrics: A list of metric calculators.
-        :param metric_aggregator: A function to aggregate metrics for early stopping.
-        :param early_stopping_kwargs: Keyword arguments for early stopping.
+        :param optimizer: Optimizer for training.
+        :param metrics: List of binary classification metrics to compute during validation.
+        :param early_stopping: EarlyStopping helper for managing early stopping.
         """
-        train_dataset = TrainAttackDataset(data, negative_ratio=negative_ratio, alpha=alpha)
+        train_dataset = TrainAttackDataset(data, negative_ratio=negative_ratio)
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalAttackDataset(data, split='val')
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
-
-        optimizer = optimizer_cls(self.parameters(), **optimizer_kwargs)
-        early_stopping = EarlyStopping(self, **early_stopping_kwargs)
-        metric_aggregator_fn: Callable[[float, list[float]], float] = eval(metric_aggregator)
 
         model_name = self.__class__.__name__
         metric_names = [metric.__class__.__name__.removeprefix('Binary') for metric in metrics]
@@ -164,11 +150,47 @@ class SMIAAttack(AttackModel):
                     for name, value in zip(metric_names, results):
                         writer.add_scalar(f'{model_name}/{name}/{group}', value, epoch)
 
-            aggregate_metric = metric_aggregator_fn(average_loss, all_results)
-            if early_stopping.step(aggregate_metric):
+            if early_stopping.step(sum(all_results)):
                 break
 
         early_stopping.load_best_state()
+
+    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
+    def train_model(
+        self, *, data: AttackData, tail_ratio: float, writer: SummaryWriter | None,
+        train_batch_size: int, val_batch_size: int, negative_ratio: float, num_epochs: int,
+        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig,
+        **kwargs
+    ):
+        """
+        Train the attack model.
+
+        :param data: The attack dataset.
+        :param tail_ratio: Proportion of users classified as long-tail users based on social connection counts.
+        :param writer: Optional TensorBoard writer for logging.
+        :param train_batch_size: Batch size for training.
+        :param val_batch_size: Batch size for validation.
+        :param negative_ratio: The ratio of negative samples to positive samples in each epoch in training.
+        :param num_epochs: Number of training epochs.
+        :param optimizer: Instantiable optimizer config.
+        :param metrics: List of binary classification metric instantiation configs.
+        :param early_stopping: Instantiable EarlyStopping helper config.
+        """
+        if kwargs:
+            logging.warning(f'Ignoring unexpected additional training config parameters: {kwargs}')
+
+        self._train_model(
+            data=data,
+            tail_ratio=tail_ratio,
+            writer=writer,
+            train_batch_size=train_batch_size,
+            val_batch_size=val_batch_size,
+            negative_ratio=negative_ratio,
+            num_epochs=num_epochs,
+            optimizer=instantiate(optimizer, params=self.parameters()),
+            metrics=instantiate(metrics),
+            early_stopping=instantiate(early_stopping, model=self)
+        )
 
     @torch.no_grad()
     def test_model(
@@ -183,6 +205,9 @@ class SMIAAttack(AttackModel):
         :param test_batch_size: Batch size for testing.
         :return: A tuple of lists of computed metric values for all, head, and tail groups.
         """
+        if kwargs:
+            logging.warning(f'Ignoring unexpected additional testing config parameters: {kwargs}')
+
         self.eval()
 
         test_dataset = EvalAttackDataset(data, split='test')

@@ -1,6 +1,7 @@
 defaults:
   - target: default
   - shadow: default
+  - attack: default
   - _self_
 
 seed: 42

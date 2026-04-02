@@ -1,4 +1,4 @@
-# This file is an example script for training and evaluating target and shadow recommendation models.
+# This file is an example script for training and evaluating the social attack pipeline.
 
 import typing
 import logging
@@ -14,6 +14,7 @@ from hydra.core.hydra_config import HydraConfig
 
 from sralt.target import TargetData, TargetModel, load_target_data, load_target_model, test_target_model
 from sralt.shadow import ShadowData, ShadowModel, load_shadow_data, load_shadow_model, test_shadow_model
+from sralt.attack import AttackData, AttackModel, load_attack_data, load_attack_model, test_attack_model
 
 
 def target_stage(
@@ -103,6 +104,55 @@ def shadow_stage(
     return shadow_data, shadow_model
 
 
+def attack_stage(
+    seed: int, deterministic: bool, device: torch.device, writer: SummaryWriter, config: DictConfig,
+    target_data: TargetData, target_model: TargetModel, shadow_data: ShadowData, shadow_model: ShadowModel
+) -> tuple[AttackData, AttackModel]:
+    attack_data = load_attack_data(
+        seed=seed,
+        deterministic=deterministic,
+        target_data=target_data,
+        shadow_data=shadow_data,
+        shadow_model=shadow_model,
+        config=config.data
+    ).to(device)
+
+    attack_model = load_attack_model(
+        seed=seed,
+        deterministic=deterministic,
+        device=device,
+        config=config.model,
+        data=attack_data,
+        tail_ratio=config.tail_ratio,
+        writer=writer
+    )
+
+    test_metrics = test_attack_model(
+        seed=seed,
+        deterministic=deterministic,
+        device=device,
+        model=attack_model,
+        data=attack_data,
+        config=config.test,
+        tail_ratio=config.tail_ratio
+    )
+
+    metric_names = [
+        f'{typing.cast(str, metric._target_).split(".")[-1].removeprefix("Binary")}'
+        for metric in config.test.metrics
+    ]
+
+    logging.info('Attack model evaluation results:')
+
+    for group, metrics in zip(['All', 'Head', 'Tail'], test_metrics):
+        for name, value in zip(metric_names, metrics):
+            logging.info(f'Test {group} {name}: {value:.4f}')
+
+    logging.info(f'Model representation: {attack_model}')
+
+    return attack_data, attack_model
+
+
 @hydra.main(config_path='pkg://sralt.configs', config_name='config', version_base=None)
 def main(config: DictConfig):
     instantiate(config.filter_warnings)
@@ -128,11 +178,25 @@ def main(config: DictConfig):
         target_model=target_model
     )
 
+    attack_data, attack_model = attack_stage(
+        seed=config.seed,
+        deterministic=config.deterministic,
+        device=device,
+        writer=writer,
+        config=config.attack,
+        target_data=target_data,
+        target_model=target_model,
+        shadow_data=shadow_data,
+        shadow_model=shadow_model
+    )
+
     output_dir = Path(HydraConfig.get().runtime.output_dir)
     torch.save(target_data, output_dir / 'target_data.pth')
     torch.save(shadow_data, output_dir / 'shadow_data.pth')
+    torch.save(attack_data, output_dir / 'attack_data.pth')
     torch.save(target_model.state_dict(), output_dir / 'target_model.pth')
     torch.save(shadow_model.state_dict(), output_dir / 'shadow_model.pth')
+    torch.save(attack_model.state_dict(), output_dir / 'attack_model.pth')
 
     writer.close()
 

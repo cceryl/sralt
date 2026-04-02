@@ -8,20 +8,18 @@ from .data import AttackData
 
 class TrainAttackDataset(Dataset):
     """
-    Dataset for training social connection attacks.
+    Dataset class for training data in attack models.
     """
 
-    def __init__(self, attack_data: AttackData, negative_ratio: float, alpha: float = 0.0):
+    def __init__(self, attack_data: AttackData, negative_ratio: float):
         """
         Initialize the training attack dataset.
 
         :param attack_data: The attack data containing social graph edges.
         :param negative_ratio: The ratio of negative samples to generate relative to positive samples.
-        :param alpha: The rebalancing factor.
         """
         self.attack_data = attack_data
         self.negative_ratio = negative_ratio
-        self.alpha = alpha
 
         self.pos_edge_index = attack_data.train_social_edge_index
         self.neg_edge_index = torch.tensor([], device=attack_data.device)
@@ -56,12 +54,7 @@ class TrainAttackDataset(Dataset):
                 'num_neg_samples': self.num_negatives
             }
 
-            if self.alpha == 0.0:
-                self.neg_edge_index = negative_sampling(**sample_args, method='dense')
-            else:
-                # Note: the rebalancing method is removed, but keep this branch for minimum code change.
-                self.neg_edge_index = negative_sampling(**sample_args, method='dense')
-
+            self.neg_edge_index = negative_sampling(**sample_args, method='dense')
             self.edge_index = torch.cat([self.pos_edge_index, self.neg_edge_index], dim=1)
 
         self.access_counter = (self.access_counter + 1) % len(self)
@@ -72,14 +65,13 @@ class TrainAttackDataset(Dataset):
         return (
             f'{self.__class__.__name__}('
             f'attack_data={repr(self.attack_data)}, '
-            f'negative_ratio={self.negative_ratio}, '
-            f'alpha={self.alpha})'
+            f'negative_ratio={self.negative_ratio})'
         )
 
 
 class EvalAttackDataset(Dataset):
     """
-    Dataset for evaluating social connection attacks.
+    Dataset class for evaluating data in attack models.
     """
 
     def __init__(self, attack_data: AttackData, split: Literal['val', 'test'] = 'val'):
@@ -124,4 +116,8 @@ class EvalAttackDataset(Dataset):
         return self.edge_index[0, idx], self.edge_index[1, idx], self.labels[idx]
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}(attack_data={repr(self.attack_data)}, split={self.split})'
+        return (
+            f'{self.__class__.__name__}('
+            f'attack_data={repr(self.attack_data)}, '
+            f'split={self.split})'
+        )
