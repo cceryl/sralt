@@ -1,23 +1,23 @@
 import logging
 
 import torch
+from omegaconf import DictConfig
 from torch_geometric.utils import to_undirected
 
-from sralt.target.data import TargetData
-from sralt.target.model import TargetModel
-from sralt.utils import leave_one_out_split
+from sralt.target import TargetData, TargetModel
+from sralt.utils import disk_cache, set_seed, leave_one_out_split
 
 
 class ShadowData(TargetData):
     """
-    The graph data for training shadow social recommendation models.
+    The graph data for training shadow models.
     """
 
     def __init__(
         self,
         target_data: TargetData, target_model: TargetModel,
         shadow_social_ratio: float, num_recommendations: int,
-        inference_batch_size: int = 1024
+        inference_batch_size: int
     ):
         """
         Initialize the shadow data.
@@ -82,3 +82,33 @@ class ShadowData(TargetData):
             f'shadow_social_ratio={self.shadow_social_ratio}, '
             f'num_recommendations={self.num_recommendations})'
         )
+
+
+@disk_cache(
+    cache_dir='.cache/shadow/data/{target_data.name}/{target_model.__class__.__name__}',
+    hit='Load cached shadow data "{target_data.name}" from "{__cache__.path}".',
+    miss='Generate shadow data from target data "{target_data.name}" and cache to "{__cache__.path}".'
+)
+def load_shadow_data(
+    seed: int, deterministic: bool,
+    target_data: TargetData, target_model: TargetModel, config: DictConfig
+) -> ShadowData:
+    """
+    Load shadow data from target data and target model.
+
+    :param seed: The random seed for shadow data generation.
+    :param deterministic: Whether to use deterministic behavior for shadow data generation.
+    :param target_data: The target data.
+    :param target_model: The target recommendation model.
+    :param config: The configuration for shadow data generation.
+    :return: An instance of the shadow data.
+    """
+    set_seed(seed, deterministic=deterministic)
+
+    return ShadowData(
+        target_data=target_data,
+        target_model=target_model,
+        shadow_social_ratio=config.shadow_social_ratio,
+        num_recommendations=config.num_recommendations,
+        inference_batch_size=config.inference_batch_size
+    )

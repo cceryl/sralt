@@ -3,7 +3,7 @@ from sralt.target.data.dataset import TrainTargetDataset, EvalTargetDataset
 
 class TrainShadowDataset(TrainTargetDataset):
     """
-    Dataset class for training data in shadow social recommendation models.
+    Dataset class for training data in shadow models.
     """
 
     pass
@@ -11,7 +11,7 @@ class TrainShadowDataset(TrainTargetDataset):
 
 class EvalShadowDataset(EvalTargetDataset):
     """
-    Dataset class for evaluation data in shadow social recommendation models.
+    Dataset class for evaluation data in shadow models.
     """
 
     pass

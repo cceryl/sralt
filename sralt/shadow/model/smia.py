@@ -1,27 +1,26 @@
-import types
 import typing
 import logging
-from typing import Any, Callable
 
 import torch
-import torch.optim as optim
 from tqdm import tqdm
+from omegaconf import DictConfig
+from torch.optim import Optimizer
+from hydra.utils import instantiate
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.nn import LightGCN
 from torch_geometric.utils import to_undirected
 from torch_geometric.metrics.link_pred import LinkPredMetric
 
-from . import register_shadow_model
 from .base import ShadowModel
 from sralt.shadow.data import ShadowData, TrainShadowDataset, EvalShadowDataset
 from sralt.utils import timer, build_normalized_adj, model_fingerprint, compute_recommendation_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
 
-@register_shadow_model('SMIA')
-class SMIAShadow(ShadowModel):
+class SMIA(ShadowModel):
     """
-    Shadow model implementing the SMIA dual-branch shadow model.
+    Social relation-level Member Inference Attack shadow model.
+    Paper: 'Social Relation-Level Privacy Risks and Preservation in Social Recommender Systems'.
     """
 
     def __init__(self, num_users: int, num_items: int, embed_dim: int, num_layers: int, decay: float):
@@ -42,57 +41,42 @@ class SMIAShadow(ShadowModel):
         self.social_branch = LightGCN(self.num_nodes, embed_dim, num_layers)
         self.behavioral_branch = LightGCN(self.num_nodes, embed_dim, num_layers)
 
-        self._cached_social_edge_index = torch.Tensor()
-        self._cached_social_sparse_adj = torch.Tensor()
-        self._cached_behavioral_edge_index = torch.Tensor()
-        self._cached_behavioral_sparse_adj = torch.Tensor()
-
-    def build_adj(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _build_adj(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute and cache the sparse adjacency matrices for both social and behavioral graphs.
+        Build the sparse adjacency matrices for both social and behavioral graphs.
         When deterministic algorithms are enabled, returns the original edge indices to avoid non-determinism in sparse matrix operations.
+        This function requires the edge indices to remain immutable to maintain object consistency.
 
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
-        :return: A tuple of social and behavioral sparse adjacency matrices.
+        :return: A tuple of social and behavioral sparse adjacency matrices or edge indices depending on the deterministic algorithm setting.
         """
         if torch.are_deterministic_algorithms_enabled():
-            # Sparse matrix multiplication is non-deterministic on GPU.
-            # LightGCN will use deterministic scatter when given edge index directly.
             return social_edge_index, behavioral_edge_index
 
-        if self._cached_social_edge_index is not social_edge_index:
-            self._cached_social_edge_index = social_edge_index
-            self._cached_social_sparse_adj = build_normalized_adj(
-                edge_index=social_edge_index,
-                num_nodes=self.num_nodes,
-                edge_weight=None,
-                add_self_loops=False,
-                normalization='none'
-            )
+        if not hasattr(self, '_adj_cache'):
+            self._adj_cache: dict[str, dict[str, torch.Tensor]] = {}
 
-        if self._cached_behavioral_edge_index is not behavioral_edge_index:
-            self._cached_behavioral_edge_index = behavioral_edge_index
-            self._cached_behavioral_sparse_adj = build_normalized_adj(
-                edge_index=behavioral_edge_index,
-                num_nodes=self.num_nodes,
-                edge_weight=None,
-                add_self_loops=False,
-                normalization='none'
-            )
+        results = []
+        for key, edge_index in [('social', social_edge_index), ('behavioral', behavioral_edge_index)]:
+            if self._adj_cache.get(key, {}).get('edge_index') is not edge_index:
+                adj = build_normalized_adj(edge_index, self.num_nodes, normalization='none')
+                self._adj_cache[key] = {'edge_index': edge_index, 'adj': adj}
 
-        return self._cached_social_sparse_adj, self._cached_behavioral_sparse_adj
+            results.append(self._adj_cache[key]['adj'])
+
+        return tuple(results)
 
     def forward(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor, target_edge_index: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass for the target model.
+        Forward pass for the SMIA shadow model.
 
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
         :param target_edge_index: Edge index tensor of shape (2, num_target_edges) for which to compute scores.
         :return: Score tensor of shape (2, num_target_edges), where the rows correspond to social and behavioral scores respectively.
         """
-        social_adj, behavioral_adj = self.build_adj(social_edge_index, behavioral_edge_index)
+        social_adj, behavioral_adj = self._build_adj(social_edge_index, behavioral_edge_index)
 
         social_scores = self.social_branch(social_adj, target_edge_index)
         behavioral_scores = self.behavioral_branch(behavioral_adj, target_edge_index)
@@ -101,13 +85,13 @@ class SMIAShadow(ShadowModel):
 
     def get_embedding(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
         """
-        Get the embeddings of the target model.
+        Get the embeddings of the SMIA shadow model.
 
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
         :return: Embedding tensor of shape (num_nodes, 2 * embed_dim) where the halves correspond to social and behavioral embeddings respectively.
         """
-        social_adj, behavioral_adj = self.build_adj(social_edge_index, behavioral_edge_index)
+        social_adj, behavioral_adj = self._build_adj(social_edge_index, behavioral_edge_index)
 
         social_embeds = self.social_branch.get_embedding(social_adj)
         behavioral_embeds = self.behavioral_branch.get_embedding(behavioral_adj)
@@ -135,38 +119,30 @@ class SMIAShadow(ShadowModel):
 
         return social_loss + behavioral_loss
 
-    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
-    def train_model(
+    def _train_model(
         self, *, data: ShadowData, writer: SummaryWriter | None,
-        train_batch_size: int, val_batch_size: int, val_num_negatives: int,
-        num_epochs: int, optimizer_cls: type[optim.Optimizer], optimizer_kwargs: dict[str, Any],
-        metrics: list[LinkPredMetric], metric_aggregator: types.CodeType, early_stopping_kwargs: dict[str, Any],
-        **kwargs
+        train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
+        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping
     ):
         """
         Train the SMIA shadow model.
 
-        :param data: The target dataset.
+        :param data: The shadow dataset.
         :param writer: Optional TensorBoard writer for logging.
         :param train_batch_size: Batch size for training.
         :param val_batch_size: Batch size for validation.
         :param val_num_negatives: Number of negative samples per positive sample during validation.
         :param num_epochs: Maximum number of training epochs.
-        :param optimizer_cls: Optimizer class to use.
-        :param optimizer_kwargs: Keyword arguments for the optimizer.
-        :param metrics: List of link prediction metrics to evaluate.
-        :param metric_aggregator: Source code of a Callable[[float, list[float]], float] that aggregates loss and metrics.
-        :param early_stopping_kwargs: Keyword arguments for the EarlyStopping helper.
+        :param optimizer: Optimizer for training.
+        :param metrics: List of link prediction metrics to compute during validation.
+        :param early_stopping: EarlyStopping helper for managing early stopping.
         """
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
+
         train_dataset = TrainShadowDataset(data)
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalShadowDataset(data, split='val', num_negatives=val_num_negatives)
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
-
-        optimizer = optimizer_cls(self.parameters(), **optimizer_kwargs)
-        early_stopping = EarlyStopping(self, **early_stopping_kwargs)
-        metric_aggregator_fn: Callable[[float, list[float]], float] = eval(metric_aggregator)
 
         model_name = self.__class__.__name__
         metric_names = [
@@ -215,11 +191,45 @@ class SMIAShadow(ShadowModel):
                 for name, value in zip(metric_names, metric_results):
                     writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
 
-            aggregated_metric = metric_aggregator_fn(average_loss, metric_results)
-            if early_stopping.step(aggregated_metric):
+            if early_stopping.step(sum(metric_results)):
                 break
 
         early_stopping.load_best_state()
+
+    @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
+    def train_model(
+        self, *, data: ShadowData, writer: SummaryWriter | None,
+        train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
+        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig,
+        **kwargs
+    ):
+        """
+        Train the SMIA shadow model.
+
+        :param data: The shadow dataset.
+        :param writer: Optional TensorBoard writer for logging.
+        :param train_batch_size: Batch size for training.
+        :param val_batch_size: Batch size for validation.
+        :param val_num_negatives: Number of negative samples per positive sample during validation.
+        :param num_epochs: Maximum number of training epochs.
+        :param optimizer: Instantiable optimizer config.
+        :param metrics: List of link prediction metric instantiation configs.
+        :param early_stopping: Instantiable EarlyStopping helper config.
+        """
+        if kwargs:
+            logging.warning(f'Ignoring unexpected additional training config parameters: {kwargs}')
+
+        self._train_model(
+            data=data,
+            writer=writer,
+            train_batch_size=train_batch_size,
+            val_batch_size=val_batch_size,
+            val_num_negatives=val_num_negatives,
+            num_epochs=num_epochs,
+            optimizer=instantiate(optimizer, params=self.parameters()),
+            metrics=instantiate(metrics),
+            early_stopping=instantiate(early_stopping, model=self)
+        )
 
     @torch.no_grad()
     def test_model(
@@ -236,6 +246,9 @@ class SMIAShadow(ShadowModel):
         :param test_num_negatives: Number of negative samples per positive sample during testing.
         :return: A list of metric values.
         """
+        if kwargs:
+            logging.warning(f'Ignoring unexpected additional testing config parameters: {kwargs}')
+
         self.eval()
 
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
@@ -256,13 +269,13 @@ class SMIAShadow(ShadowModel):
         Get the user features learned by the shadow model for attack purposes.
 
         :param data: The shadow dataset.
-        :return: A tensor of shape (num_users, feature_dim) representing user features.
+        :return: A tensor of shape (num_users, 4 * embed_dim) representing user features.
         """
         self.eval()
 
         social_edge_index = data.social_edge_index
         behavioral_edge_index = to_undirected(data.behavioral_edge_index)
-        social_adj, behavioral_adj = self.build_adj(social_edge_index, behavioral_edge_index)
+        social_adj, behavioral_adj = self._build_adj(social_edge_index, behavioral_edge_index)
 
         social_embeds = self.social_branch.get_embedding(social_adj)
         behavioral_embeds = self.behavioral_branch.get_embedding(behavioral_adj)

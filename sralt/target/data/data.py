@@ -118,7 +118,7 @@ class TargetData(ABC):
 )
 def load_target_data(seed: int, deterministic: bool, config: DictConfig) -> TargetData:
     """
-    Load a dataset by provided data loader.
+    Load a dataset by provided configuration.
 
     :param seed: The random seed for dataset initialization.
     :param deterministic: Whether to use deterministic behavior for dataset initialization.

@@ -28,7 +28,7 @@ class TargetModel(nn.Module, ABC):
 
     @abstractmethod
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
-    def train_model(self, *, data: TargetData, writer: SummaryWriter | None, **kwargs) -> None:
+    def train_model(self, *, data: TargetData, writer: SummaryWriter | None, **kwargs):
         """
         Train the target model.
 

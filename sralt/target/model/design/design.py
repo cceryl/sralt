@@ -24,7 +24,7 @@ from sralt.utils import DataLoader, EarlyStopping
 class DESIGN(TargetModel):
     """
     Distillation Enhanced Social Graph Network model.
-    Paper: 'Revisiting Graph based Social Recommendation: A Distillation Enhanced Social Graph Network'
+    Paper: 'Revisiting Graph based Social Recommendation: A Distillation Enhanced Social Graph Network'.
     """
 
     def __init__(

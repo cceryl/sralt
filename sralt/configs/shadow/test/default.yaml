@@ -1,0 +1,9 @@
+metrics:
+  - _target_: torch_geometric.metrics.LinkPredRecall
+    k: 10
+  - _target_: torch_geometric.metrics.LinkPredNDCG
+    k: 10
+
+evaluation:
+  test_batch_size: 2048
+  test_num_negatives: 999

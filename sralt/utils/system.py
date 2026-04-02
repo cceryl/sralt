@@ -21,6 +21,7 @@ from .model import tensor_fingerprint
 def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 10) -> str:
     """
     Get a string representation of an object for caching purposes.
+    All torch.device objects are treated as identical.
 
     :param obj: The object to represent.
     :param visited: Set of visited object ids to avoid infinite recursion.
@@ -35,8 +36,10 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
         visited = set()
     if id(obj) in visited:
         return '...'
-    if isinstance(obj, (list, tuple, set, dict, frozenset)):
-        visited.add(id(obj))
+    visited.add(id(obj))
+
+    if isinstance(obj, torch.device):
+        return 'device'
 
     if isinstance(obj, SummaryWriter):
         return 'SummaryWriter'
@@ -46,14 +49,11 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
 
     if isinstance(obj, (list, tuple, set, frozenset)):
         elements = [get_object_repr(e, visited, max_depth) for e in obj]
-        if isinstance(obj, list):
-            return f'[{", ".join(elements)}]'
-        elif isinstance(obj, tuple):
-            return f'({", ".join(elements)})'
-        elif isinstance(obj, set):
-            return f'{{{", ".join(elements)}}}'
-        else:
-            return f'frozenset({{{", ".join(elements)}}})'
+        match type(obj).__name__:
+            case 'list': return f'[{", ".join(elements)}]'
+            case 'tuple': return f'({", ".join(elements)})'
+            case 'set': return f'{{{", ".join(elements)}}}'
+            case 'frozenset': return f'frozenset({{{", ".join(elements)}}})'
 
     if isinstance(obj, dict):
         items = [
@@ -78,6 +78,7 @@ def disk_cache(
     A decorator to cache the result of a function to disk.
     Available placeholders are arguments of the decorated function and 'func', 'hash', 'path' in '__cache__' namespace.
     Note that the decorated function should not have a parameter named '__cache__'.
+    All torch.device objects are treated as identical in cache key generation.
 
     :param cache_dir: Directory where cached results will be stored.
     :param hit: Log format string for cache hits.
