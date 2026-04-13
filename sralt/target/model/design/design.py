@@ -264,7 +264,7 @@ class DESIGN(TargetModel):
         return metric_results
 
     @torch.no_grad()
-    def recommend(self, *, data: TargetData, num_recommendations: int, batch_size: int = 1024) -> torch.Tensor:
+    def recommend(self, *, data: TargetData, num_recommendations: int, batch_size: int) -> torch.Tensor:
         """
         Generate recommendations for the given users, avoiding items they have already interacted with.
 

@@ -14,14 +14,12 @@ class TrainTargetDataset(Dataset):
 
     def __init__(self, data: TargetData):
         """
-        Initializes the dataset with the provided data object.
-
-        :param data: An instance of the Data class containing graph data.
+        :param data: Target data object containing graph data.
         """
         self.data = data
 
         self.users, self.positive_items = data.behavioral_train_edge_index
-        self.negative_items: torch.Tensor = torch.tensor([])
+        self.negative_items = torch.tensor([])
 
         self.access_counter = 0
 
@@ -71,9 +69,7 @@ class EvalTargetDataset(Dataset):
 
     def __init__(self, data: TargetData, split: Literal['val', 'test'] = 'val', num_negatives: int = 999):
         """
-        Initializes the evaluation dataset with the provided data object and number of negative samples.
-
-        :param data: An instance of the Data class containing graph data.
+        :param data: Target data object containing graph data.
         :param split: The data split to use ('val' or 'test').
         :param num_negatives: The number of negative samples to generate for each positive interaction.
         """

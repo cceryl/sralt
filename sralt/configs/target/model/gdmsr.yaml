@@ -1,0 +1,33 @@
+name: GDMSR
+
+attribute:
+  _target_: sralt.target.model.gdmsr.GDMSR
+  embed_dim: 64
+  num_layers: 2
+  sequence_length: 30
+  curriculum_interval: 10
+  alpha: 1e-2
+  beta: 0.5
+  gamma: 1.0
+  epsilon: 10
+  r: 0.5
+  decay: 1e-3
+
+train:
+  train_batch_size: 4096
+  val_batch_size: 4096
+  val_num_negatives: 999
+  num_epochs: 300
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-3
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 10
+    greater_is_better: True
+    epsilon: 1e-5

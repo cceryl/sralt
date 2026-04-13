@@ -78,7 +78,7 @@ def sample_negative_items(
     neg_idx = users * num_items + neg_items
 
     conflict_mask = torch.isin(neg_idx, pos_idx)
-    conflicts = conflict_mask.nonzero(as_tuple=False).view(-1)
+    conflicts = conflict_mask.nonzero(as_tuple=True)[0]
     while conflicts.numel() > 0:
         replacement = torch.randint(num_items, (conflicts.size(0),), device=device, dtype=torch.long) + num_users
         neg_items[conflicts] = replacement

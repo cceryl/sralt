@@ -1,4 +1,4 @@
-# This file is an example script for training and evaluating the social attack pipeline.
+# This script executes the SRALT pipeline.
 
 import typing
 import logging
@@ -106,7 +106,7 @@ def shadow_stage(
 
 def attack_stage(
     seed: int, deterministic: bool, device: torch.device, writer: SummaryWriter, config: DictConfig,
-    target_data: TargetData, target_model: TargetModel, shadow_data: ShadowData, shadow_model: ShadowModel
+    target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel
 ) -> tuple[AttackData, AttackModel]:
     attack_data = load_attack_data(
         seed=seed,
@@ -185,7 +185,6 @@ def main(config: DictConfig):
         writer=writer,
         config=config.attack,
         target_data=target_data,
-        target_model=target_model,
         shadow_data=shadow_data,
         shadow_model=shadow_model
     )
