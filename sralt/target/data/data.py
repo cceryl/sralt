@@ -22,7 +22,7 @@ class TargetData(ABC):
     num_users: int
     num_items: int
 
-    # Undirected user-user social graph edge index of shape (2, 2 * num_social_edges)
+    # Undirected user-user social graph edge index of shape (2, num_social_edges)
     social_edge_index: torch.Tensor
 
     # Directed user-item behavioral training graph edge index of shape (2, num_behavioral_train_edges)
@@ -52,7 +52,7 @@ class TargetData(ABC):
 
     @property
     def num_social_edges(self) -> int:
-        return self.social_edge_index.size(1) // 2
+        return self.social_edge_index.size(1)
 
     @property
     def behavioral_edge_index(self) -> torch.Tensor:

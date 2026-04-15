@@ -14,7 +14,7 @@ attribute:
   decay: 1e-3
 
 train:
-  train_batch_size: 4096
+  train_batch_size: 8192
   val_batch_size: 4096
   val_num_negatives: 999
   num_epochs: 300

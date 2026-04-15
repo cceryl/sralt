@@ -43,12 +43,13 @@ class ShadowData(TargetData):
         self.num_items = target_data.num_items
 
         # Sample social connections from the target data
-        num_shadow_social_edges = int(target_data.num_social_edges * shadow_social_ratio)
-        perm = torch.randperm(target_data.num_social_edges, device=target_data.device)
+        directed_mask = target_data.social_edge_index[0] <= target_data.social_edge_index[1]
+        directed_social_edge_index = target_data.social_edge_index[:, directed_mask]
+
+        num_shadow_social_edges = int(directed_social_edge_index.size(1) * shadow_social_ratio)
+        perm = torch.randperm(directed_social_edge_index.size(1), device=target_data.device)
         selected_indices = perm[:num_shadow_social_edges]
 
-        directed_mask = target_data.social_edge_index[0] < target_data.social_edge_index[1]
-        directed_social_edge_index = target_data.social_edge_index[:, directed_mask]
         self.social_edge_index = to_undirected(directed_social_edge_index[:, selected_indices])
 
         # Generate recommendations for each user using the target model

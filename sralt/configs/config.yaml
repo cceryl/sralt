@@ -31,6 +31,7 @@ hydra:
 
   job_logging:
     version: 1
+    disable_existing_loggers: False
 
     formatters:
       console:
@@ -54,7 +55,6 @@ hydra:
       console:
         class: logging.StreamHandler
         formatter: console
-        stream: ext://sys.stdout
 
       file:
         class: logging.FileHandler

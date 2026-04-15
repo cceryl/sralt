@@ -110,7 +110,7 @@ class AttackData:
         self.shadow_social_edge_index = shadow_data.social_edge_index
 
         def to_directed(edge_index: torch.Tensor) -> torch.Tensor:
-            return edge_index[:, edge_index[0] < edge_index[1]]
+            return edge_index[:, edge_index[0] <= edge_index[1]]
 
         # Split shadow social edges into training and validation sets
         directed_shadow_edges = to_directed(self.shadow_social_edge_index)
