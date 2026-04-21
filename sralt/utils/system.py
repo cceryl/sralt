@@ -132,14 +132,25 @@ def disk_cache(
     return decorator
 
 
-def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.device:
+def get_device(allow_share: bool = False, allow_cpu: bool = False, persistent: bool = False) -> torch.device:
     """
     Get the available device. Try to use the GPU with the most free memory.
 
     :param allow_share: Whether to allow sharing GPU with other running processes.
     :param allow_cpu: Whether to allow using CPU if no suitable GPU is found.
+    :param persistent: Whether to persist the device selection. If True, the selected device will be cached and reused in subsequent calls.
     :return: The selected torch device.
     """
+    if hasattr(get_device, '_cached_device'):
+        if not persistent:
+            delattr(get_device, '_cached_device')
+        else:
+            cached_device: torch.device = getattr(get_device, '_cached_device')
+            logging.info(
+                f'Using GPU: {torch.cuda.get_device_name(cached_device)} (index {cached_device.index}) from cache.'
+            )
+            return cached_device
+
     @typing.no_type_check
     def safe_cuda_call(func: Callable, *args, **kwargs):
         code, result = func(*args, **kwargs)
@@ -173,6 +184,8 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.devi
         if not allow_share:
             uuids = [uuid for uuid in uuids if pynvml.nvmlDeviceGetComputeRunningProcesses(uuid_to_handle[uuid]) == []]
 
+        device: torch.device | None = None
+
         for uuid in uuids:
             if uuid not in uuid_to_cuda_id:
                 continue
@@ -180,13 +193,18 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False) -> torch.devi
             cuda_id = uuid_to_cuda_id[uuid]
             device = torch.device(f'cuda:{cuda_id}')
             logging.info(f'Using GPU: {torch.cuda.get_device_name(device)} (index {device.index}).')
-            return device
 
-        if allow_cpu:
-            logging.warning('No available GPU found. Using CPU.')
-            return torch.device('cpu')
+        if device is None:
+            if allow_cpu:
+                device = torch.device('cpu')
+                logging.warning('No available GPU found. Using CPU.')
+            else:
+                raise RuntimeError('No available GPU found.')
 
-        raise RuntimeError('No available GPU found.')
+        if persistent:
+            setattr(get_device, '_cached_device', device)
+
+        return device
 
     finally:
         pynvml.nvmlShutdown()

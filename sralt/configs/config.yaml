@@ -10,6 +10,7 @@ device:
   _target_: sralt.utils.get_device
   allow_share: True
   allow_cpu: False
+  persistent: True
 writer:
   _target_: torch.utils.tensorboard.SummaryWriter
   log_dir: ${hydra:runtime.output_dir}/tensorboard
