@@ -193,6 +193,7 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False, persistent: b
             cuda_id = uuid_to_cuda_id[uuid]
             device = torch.device(f'cuda:{cuda_id}')
             logging.info(f'Using GPU: {torch.cuda.get_device_name(device)} (index {device.index}).')
+            break
 
         if device is None:
             if allow_cpu:
