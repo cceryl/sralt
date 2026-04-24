@@ -1,0 +1,29 @@
+name: EGCL
+
+attribute:
+  _target_: sralt.target.model.egcl.EGCL
+  embed_dim: 64
+  num_layers: 2
+  decay: 1e-4
+  temperature: 0.05
+  intra_reg: 1e-4
+  inter_reg: 1e-4
+
+train:
+  train_batch_size: 8192
+  val_batch_size: 4096
+  val_num_negatives: 999
+  num_epochs: 300
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-2
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 10
+    greater_is_better: True
+    epsilon: 1e-5

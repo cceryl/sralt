@@ -42,8 +42,8 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
         return 'device'
 
     if isinstance(obj, SummaryWriter):
-        return 'SummaryWriter'
-
+        return 'None'
+ 
     if isinstance(obj, torch.Tensor):
         return f'torch.Tensor(fingerprint={tensor_fingerprint(obj)})'
 
