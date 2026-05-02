@@ -21,6 +21,7 @@ class AttackData:
 
     target_data_repr: str
     shadow_data_repr: str
+    shadow_model_repr: str
     val_ratio: float
 
     device: torch.device

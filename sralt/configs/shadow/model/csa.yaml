@@ -7,7 +7,7 @@ attribute:
   decay: 1e-2
   num_quantizers: 8
   codebook_size: 256
-  commitment_weight: 0.0
+  commitment_weight: 1e-6
   quantization: True
   feature: both
 

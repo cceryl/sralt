@@ -4,7 +4,7 @@ metrics:
   - _target_: torchmetrics.F1Score
     task: binary
   - _target_: sralt.utils.TPRatFPR
-    target_fpr: 0.01
+    target_fpr: 0.001
   - _target_: torchmetrics.Precision
     task: binary
   - _target_: torchmetrics.Recall
