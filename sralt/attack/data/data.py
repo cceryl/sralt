@@ -133,6 +133,7 @@ class AttackData:
         # Extract user features from the shadow model
         self.user_features = shadow_model.get_user_features(shadow_data)
 
+        self.to(torch.device('cpu'))
         logging.info(
             f'Attack data generated with '
             f'{self.num_users} users, '

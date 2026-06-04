@@ -67,6 +67,7 @@ class ShadowData(TargetData):
         self.behavioral_val_edge_index = val_edge_index
         self.behavioral_test_edge_index = test_edge_index
 
+        self.to(torch.device('cpu'))
         logging.info(
             f'Shadow data generated with '
             f'{self.num_users} users, '

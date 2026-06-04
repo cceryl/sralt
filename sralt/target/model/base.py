@@ -1,3 +1,4 @@
+import typing
 from abc import abstractmethod, ABC
 
 import torch
@@ -98,7 +99,9 @@ def create_target_model(
 @disk_cache(
     cache_dir='.cache/target/model/{config.name}',
     hit='Load trained target model "{config.name}" from cache at "{__cache__.path}".',
-    miss='Train target model "{config.name}" and cache to "{__cache__.path}".'
+    miss='Train target model "{config.name}" and cache to "{__cache__.path}".',
+    ignore=['device', 'writer'],
+    hook=lambda model, args, _: typing.cast(TargetModel, model).to(args['device'])
 )
 def load_target_model(
     seed: int, deterministic: bool, device: torch.device,
@@ -132,7 +135,7 @@ def load_target_model(
     set_seed(seed, deterministic=deterministic)
     model.train_model(data=data, writer=writer, **config.train)
 
-    return model
+    return model.cpu()
 
 
 def test_target_model(

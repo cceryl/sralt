@@ -1,3 +1,4 @@
+import typing
 from abc import abstractmethod, ABC
 
 import torch
@@ -96,7 +97,9 @@ def create_shadow_model(
 @disk_cache(
     cache_dir='.cache/shadow/model/{config.name}',
     hit='Load trained shadow model "{config.name}" from cache at "{__cache__.path}".',
-    miss='Train shadow model "{config.name}" and cache to "{__cache__.path}".'
+    miss='Train shadow model "{config.name}" and cache to "{__cache__.path}".',
+    ignore=['device', 'writer'],
+    hook=lambda model, args, _: typing.cast(ShadowModel, model).to(args['device'])
 )
 def load_shadow_model(
     seed: int, deterministic: bool, device: torch.device,
@@ -129,7 +132,7 @@ def load_shadow_model(
     set_seed(seed, deterministic=deterministic)
     model.train_model(data=data, writer=writer, **config.train)
 
-    return model
+    return model.cpu()
 
 
 def test_shadow_model(

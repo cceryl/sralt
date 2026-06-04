@@ -38,22 +38,15 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
         return '...'
     visited.add(id(obj))
 
-    if isinstance(obj, torch.device):
-        return 'device'
-
-    if isinstance(obj, SummaryWriter):
-        return 'None'
- 
     if isinstance(obj, torch.Tensor):
         return f'torch.Tensor(fingerprint={tensor_fingerprint(obj)})'
 
-    if isinstance(obj, (list, tuple, set, frozenset)):
+    if isinstance(obj, (list, tuple, set)):
         elements = [get_object_repr(e, visited, max_depth) for e in obj]
         match type(obj).__name__:
             case 'list': return f'[{", ".join(elements)}]'
             case 'tuple': return f'({", ".join(elements)})'
             case 'set': return f'{{{", ".join(elements)}}}'
-            case 'frozenset': return f'frozenset({{{", ".join(elements)}}})'
 
     if isinstance(obj, dict):
         items = [
@@ -72,7 +65,9 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
 def disk_cache(
     cache_dir: str,
     hit: str = 'Loading cached result of function "{__cache__.func.__name__}" from "{__cache__.path}".',
-    miss: str = 'Computing result of function "{__cache__.func.__name__}" and caching to "{__cache__.path}".'
+    miss: str = 'Computing result of function "{__cache__.func.__name__}" and caching to "{__cache__.path}".',
+    ignore: list[str] = [],
+    hook: Callable[[Any, dict[str, Any], types.SimpleNamespace], Any] | None = None
 ) -> Callable:
     """
     A decorator to cache the result of a function to disk.
@@ -83,6 +78,8 @@ def disk_cache(
     :param cache_dir: Directory where cached results will be stored.
     :param hit: Log format string for cache hits.
     :param miss: Log format string for cache misses.
+    :param ignore: List of argument names to ignore in cache key generation.
+    :param hook: A function to be called on the result, with the arguments and cache namespace.
     :return: The decorated function with caching capability.
     """
     def decorator(func: Callable) -> Callable:
@@ -97,7 +94,10 @@ def disk_cache(
             cache_dir_path.mkdir(parents=True, exist_ok=True)
 
             try:
-                key = (func.__name__, {k: get_object_repr(v) for k, v in bound_args.arguments.items()})
+                key = (
+                    func.__name__,
+                    {k: get_object_repr(v) for k, v in bound_args.arguments.items() if k not in ignore}
+                )
             except NotImplementedError as e:
                 raise RuntimeError(
                     f'Failed to generate cache key for function "{func.__name__}", arguments: {bound_args.arguments}.'
@@ -116,6 +116,9 @@ def disk_cache(
                     cache_data = pickle.load(f)
 
                 if isinstance(cache_data, dict) and cache_data.get('key') == key:
+                    if hook is not None:
+                        return hook(cache_data['result'], bound_args.arguments, cache_ns)
+
                     return cache_data['result']
 
                 logging.warning(f'Hash collision detected for cache file "{cache_path}". Recomputing the result.')
@@ -125,6 +128,10 @@ def disk_cache(
 
             with cache_path.open('wb') as f:
                 pickle.dump({'key': key, 'result': result}, f)
+
+            if hook is not None:
+                result = hook(result, bound_args.arguments, cache_ns)
+
             return result
 
         return wrapper

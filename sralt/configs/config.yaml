@@ -2,6 +2,7 @@ defaults:
   - target: default
   - shadow: default
   - attack: default
+  - experiment: null
   - _self_
 
 seed: 42
