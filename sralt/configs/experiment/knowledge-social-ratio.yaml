@@ -1,0 +1,10 @@
+# @package _global_
+hydra:
+  sweeper:
+    params:
+      target/data: ciao
+      target/model: design
+      shadow/model: csa
+      attack/model: mlp
+      seed: 42,43,44,45,46
+      shadow.data.shadow_social_ratio: 0.01,0.05,0.1,0.2,0.3

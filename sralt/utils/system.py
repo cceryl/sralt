@@ -1,6 +1,5 @@
 import time
 import types
-import typing
 import logging
 import hashlib
 import inspect
@@ -11,9 +10,8 @@ from typing import Any, Callable
 import torch
 import pynvml
 import pickle
-from cuda import cuda
+import cuda.bindings.driver as driver
 from pathlib import Path
-from torch.utils.tensorboard import SummaryWriter
 
 from .model import tensor_fingerprint
 
@@ -158,21 +156,19 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False, persistent: b
             )
             return cached_device
 
-    @typing.no_type_check
     def safe_cuda_call(func: Callable, *args, **kwargs):
         code, result = func(*args, **kwargs)
-        if code != cuda.CUresult.CUDA_SUCCESS:
+        if code != driver.CUresult.CUDA_SUCCESS:
             raise RuntimeError(f'CUDA error code: {code}.')
         return result
 
-    @typing.no_type_check
     def get_uuid_to_cuda_id() -> dict[str, int]:
-        cuda.cuInit(0)
+        driver.cuInit(0)
         uuid_to_cuda_id: dict[str, int] = {}
 
-        for cuda_id in range(safe_cuda_call(cuda.cuDeviceGetCount)):
-            device = safe_cuda_call(cuda.cuDeviceGet, cuda_id)
-            uuid_bytes = safe_cuda_call(cuda.cuDeviceGetUuid, device)
+        for cuda_id in range(safe_cuda_call(driver.cuDeviceGetCount)):
+            device = safe_cuda_call(driver.cuDeviceGet, cuda_id)
+            uuid_bytes = safe_cuda_call(driver.cuDeviceGetUuid, device)
             uuid_str = 'GPU-' + str(UUID(bytes=uuid_bytes.bytes))
             uuid_to_cuda_id[uuid_str] = cuda_id
 

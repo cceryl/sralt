@@ -15,7 +15,7 @@ def build_normalized_adj(
     edge_weight: torch.Tensor | None = None,
     add_self_loops: bool = False,
     normalization: Literal['none', 'symmetric', 'source', 'target'] = 'symmetric'
-) -> torch.sparse.Tensor:
+) -> torch.Tensor:
     """
     Build a normalized CSR adjacency matrix from the given edge index.
 

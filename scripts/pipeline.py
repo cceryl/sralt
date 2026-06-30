@@ -157,6 +157,13 @@ def attack_stage(
 def main(config: DictConfig):
     instantiate(config.filter_warnings)
 
+    logging.info(
+        f'Dataset: {config.target.data.name}; '
+        f'Target: {config.target.model.name}; '
+        f'Shadow: {config.shadow.model.name}; '
+        f'Attack: {config.attack.model.name}.'
+    )
+
     device: torch.device = instantiate(config.device)
     writer: SummaryWriter = instantiate(config.writer)
 

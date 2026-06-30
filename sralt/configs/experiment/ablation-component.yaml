@@ -1,0 +1,10 @@
+# @package _global_
+hydra:
+  sweeper:
+    params:
+      target/data: ciao
+      target/model: design
+      shadow/model: dsa
+      attack/model: mlp
+      seed: 42,43,44,45,46
+      shadow.model.attribute.sim: cosine,random

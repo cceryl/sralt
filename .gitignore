@@ -1,8 +1,8 @@
+.venv
 .vscode
 __pycache__
 *.egg-info
 
 .cache
-.tmp
 runs
 todo.md
