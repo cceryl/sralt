@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Apptainer Python Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "python": "${workspaceFolder}/.vscode/apptainer-python.sh",
+            "console": "integratedTerminal",
+            "args": [
+                "-m",
+                "target/data=ciao,flickr,yelp",
+                "target/model=design,gdmsr,egcl",
+                "shadow/model=smia,csa",
+                "attack/model=mlp",
+                "seed=42,43,44,45,46"
+            ]
+        }
+    ]
+}

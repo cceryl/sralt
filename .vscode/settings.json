@@ -1,0 +1,11 @@
+{
+    "python.analysis.typeCheckingMode": "standard",
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.venv": true
+    },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/.venv/lib/python3.12/site-packages",
+        "${workspaceFolder}/.venv/lib64/python3.12/site-packages"
+    ]
+}
