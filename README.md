@@ -15,10 +15,12 @@ The codebase supports Ciao, Flickr, and Yelp. The target recommenders are DESIGN
 
 ## Installation
 
-The repository targets Linux and the provided environment uses Python 3.12.13. Make sure `uv` is installed first, then run:
+The repository targets Linux and the provided environment uses Python 3.12.13. 
+
+Make sure `uv` is installed first, then run:
 
 ```bash
-bash install.sh
+uv sync
 ```
 
 The script creates a Python 3.12.13 virtual environment, installs the required packages, and installs this project in editable mode.
