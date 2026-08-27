@@ -1,12 +1,12 @@
 # SRALT
 
-SRALT is a social relation-level membership inference attack framework for long-tail users in social recommender systems. It evaluates privacy leakage under strict black-box settings and is built around three stages: a target stage that trains and evaluates the victim recommender, a shadow stage that learns attack-oriented user representations, and an attack stage that predicts whether a social link exists between two users.
+SRALT is a social-relation level membership inference attack framework targeting long-tail users in social recommender systems. It evaluates privacy leakage under strict black-box settings and is built around three stages: a target stage for training and evaluating the victim recommender, a shadow stage for learning attack-oriented user representations, and an attack stage for predicting whether a social link exists between two users.
 
-The codebase supports Ciao, Flickr, and Yelp. The target recommenders are DESIGN, GDMSR, and EGCL. The shadow models are SMIA, CSA, and DSA, and the final attack model is MLP. CSA is the proposed model that leverages residual vector quantization and semantic edge augmentation to learn high-quality representations for long-tail users. DSA is a variant of CSA that removes the residual vector quantization module, and SMIA is a baseline that uses a simple graph neural network to learn user representations.
+The codebase supports Ciao, Flickr, and Yelp datasets. The target recommenders are DESIGN, GDMSR, and EGCL. The shadow models are SMIA, CSA, and DSA, and the final attack model is MLP. CSA, our proposed model, leverages residual vector quantization and semantic edge augmentation to learn high-quality representations for long-tail users. DSA, which removes the residual vector quantization module, serves as an ablation variant of CSA. SMIA serves as the baseline and employs two simple graph neural networks to learn user representations. The attack model is an MLP classifier that takes the representations of two users as input and predicts whether a social link exists between them.
 
 ## Project Structure
 
-- `scripts/`: end-to-end training and evaluation entry point
+- `scripts/`: scripts for end-to-end training and evaluation
 - `sralt/`: package source code
 - `sralt/configs/`: Hydra configuration files
 - `data/`: dataset files
@@ -15,7 +15,7 @@ The codebase supports Ciao, Flickr, and Yelp. The target recommenders are DESIGN
 
 ## Installation
 
-The repository targets Linux and the provided environment uses Python 3.12.13. 
+The repository targets Linux and uses Python 3.12.13.
 
 Make sure `uv` is installed first, then run:
 
@@ -23,7 +23,7 @@ Make sure `uv` is installed first, then run:
 uv sync
 ```
 
-The script creates a Python 3.12.13 virtual environment, installs the required packages, and installs this project in editable mode.
+This creates a Python 3.12.13 virtual environment, fetches the required packages, and installs the project in editable mode.
 
 You may need to activate the virtual environment before running the pipeline:
 
@@ -39,7 +39,7 @@ The pipeline is configured with Hydra. For a single run, you must at least speci
 python ./scripts/pipeline.py target/data=ciao target/model=design shadow/model=csa attack/model=mlp
 ```
 
-All modifiable parameters are listed in the configuration files under `sralt/configs`. You can override any parameter by specifying its path and value in the command line. For example, to change the number of quantizers in the CSA shadow model, you can run:
+All modifiable parameters are listed in the configuration files under `sralt/configs`. You can override any parameter by specifying its path and value on the command line. For example, to change the number of quantizers in the CSA shadow model, you can use the following command:
 
 ```bash
 python ./scripts/pipeline.py target/data=ciao target/model=design shadow/model=csa attack/model=mlp shadow.model.attribute.num_quantizers=16
