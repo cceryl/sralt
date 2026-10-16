@@ -14,7 +14,7 @@ from sralt.utils import disk_cache, timer, set_seed
 
 class TargetModel(nn.Module, ABC):
     """
-    Base class for target social recommendation models.
+    Base class for target recommendation models, including social and general recommenders.
     """
 
     def __init__(self, num_users: int, num_items: int):

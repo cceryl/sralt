@@ -1,0 +1,9 @@
+# @package _global_
+hydra:
+  sweeper:
+    params:
+      target/data: ciao,flickr,yelp
+      target/model: design,gdmsr,egcl
+      shadow/model: miner
+      attack/model: miner,enminer
+      seed: 42,43,44,45,46

@@ -36,7 +36,8 @@ def set_seed(seed: int, deterministic: bool = True):
 
     torch.set_float32_matmul_precision('highest' if deterministic else 'high')
     torch.use_deterministic_algorithms(deterministic)
-    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8' if deterministic else ''
+    if deterministic:
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
     logging.info(f'Random seed={seed}, deterministic={deterministic}.')
 

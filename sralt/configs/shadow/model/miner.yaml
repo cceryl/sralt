@@ -1,0 +1,8 @@
+defaults:
+  - smia
+  - _self_
+
+name: MINER
+
+attribute:
+  _target_: sralt.shadow.model.miner.MINER

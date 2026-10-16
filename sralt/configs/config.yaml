@@ -6,7 +6,7 @@ defaults:
   - _self_
 
 seed: 42
-deterministic: True
+deterministic: False
 device:
   _target_: sralt.utils.get_device
   allow_share: True
@@ -23,6 +23,9 @@ filter_warnings:
   - _target_: warnings.filterwarnings
     action: ignore
     message: "You are trying to use a metric in deterministic mode on GPU that uses `torch.cumsum`, which is currently not supported."
+  - _target_: warnings.filterwarnings
+    action: ignore
+    message: "Sparse invariant checks are implicitly disabled."
 
 hydra:
   run:

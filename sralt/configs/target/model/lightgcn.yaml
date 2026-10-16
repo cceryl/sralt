@@ -1,0 +1,26 @@
+name: LightGCN
+
+attribute:
+  _target_: sralt.target.model.lightgcn.LightGCN
+  embed_dim: 64
+  num_layers: 3
+  decay: 1e-4
+
+train:
+  train_batch_size: 2048
+  val_batch_size: 4096
+  val_num_negatives: 999
+  num_epochs: 300
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-3
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 10
+    greater_is_better: True
+    epsilon: 1e-5

@@ -1,0 +1,8 @@
+defaults:
+  - miner
+  - _self_
+
+name: En_MINER
+
+attribute:
+  bidirectional: True

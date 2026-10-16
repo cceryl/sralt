@@ -1,0 +1,39 @@
+name: MINER
+
+attribute:
+  _target_: sralt.attack.model.miner.MINER
+  embed_dim: ${shadow.model.attribute.embed_dim}
+  num_recommendations: ${shadow.data.num_recommendations}
+  bidirectional: False
+  dropout: 0.5
+  leaky_relu_slope: 0.2
+
+# Dataset-specific learning rates from SMIA's mia_attack.py.
+learning_rates:
+  Ciao: 0.01
+  Flickr: 0.05
+  Yelp: 0.05
+
+train:
+  train_batch_size: 256
+  val_batch_size: 4096
+  negative_ratio: 1.0
+  num_epochs: 150
+  optimizer:
+    _target_: sralt.attack.model.miner.SGDWithGradientClipping
+    lr: ${attack.model.learning_rates.${target.data.name}}
+    momentum: 0.9
+    weight_decay: 0.0
+    grad_clip_norm: 5.0
+  metrics:
+    - _target_: torchmetrics.AUROC
+      task: binary
+    - _target_: torchmetrics.F1Score
+      task: binary
+    - _target_: sralt.utils.TPRatFPR
+      target_fpr: 0.01
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 30
+    greater_is_better: True
+    epsilon: 1e-5
