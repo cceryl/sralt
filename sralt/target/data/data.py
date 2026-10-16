@@ -1,4 +1,5 @@
 from abc import ABC
+from pathlib import Path
 from dataclasses import dataclass
 from typing_extensions import Self
 
@@ -110,11 +111,25 @@ class TargetData(ABC):
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(name={self.name}, directory={self.directory})'
 
+    def cache_key(self) -> tuple:
+        return (
+            repr(self), self.num_users, self.num_items, self.social_edge_index,
+            self.behavioral_train_edge_index, self.behavioral_val_edge_index, self.behavioral_test_edge_index
+        )
+
+
+def dataset_file_metadata(arguments: dict) -> list[tuple]:
+    return [
+        (str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in sorted(Path(arguments['config'].directory).iterdir()) if path.is_file()
+    ]
+
 
 @disk_cache(
     cache_dir='.cache/target/data/{config.name}',
     hit='Load cached target data "{config.name}" from "{__cache__.path}".',
-    miss='Generate target data "{config.name}" from {config.directory} and cache to "{__cache__.path}".'
+    miss='Generate target data "{config.name}" from {config.directory} and cache to "{__cache__.path}".',
+    dependencies=dataset_file_metadata
 )
 def load_target_data(seed: int, deterministic: bool, config: DictConfig) -> TargetData:
     """

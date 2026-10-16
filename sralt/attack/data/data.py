@@ -151,6 +151,12 @@ class AttackData:
             f'val_ratio={self.val_ratio})'
         )
 
+    def cache_key(self) -> tuple:
+        return (
+            repr(self), self.num_users, self.target_social_edge_index, self.shadow_social_edge_index,
+            self.train_social_edge_index, self.val_social_edge_index, self.test_social_edge_index, self.user_features
+        )
+
 
 @disk_cache(
     cache_dir='.cache/attack/data/{target_data.name}/{shadow_data.target_model_name}/{shadow_model.__class__.__name__}',

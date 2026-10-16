@@ -1,3 +1,4 @@
+from typing import Callable
 import torch
 import torch.nn as nn
 from torch_geometric.utils import scatter
@@ -15,6 +16,11 @@ class SocialConv(nn.Module):
 
         self._cached_edge_index = torch.Tensor()
         self._cached_sparse_adj = torch.Tensor()
+
+    def _apply(self, fn: Callable, recurse: bool = True):
+        self._cached_edge_index = torch.Tensor()
+        self._cached_sparse_adj = torch.Tensor()
+        return super()._apply(fn, recurse=recurse)
 
     def forward(self, edge_index: torch.Tensor, embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -52,6 +58,11 @@ class RatingConv(nn.Module):
 
         self._cached_edge_index = torch.Tensor()
         self._cached_sparse_adj = torch.Tensor()
+
+    def _apply(self, fn: Callable, recurse: bool = True):
+        self._cached_edge_index = torch.Tensor()
+        self._cached_sparse_adj = torch.Tensor()
+        return super()._apply(fn, recurse=recurse)
 
     def forward(self, edge_index: torch.Tensor, embeds: torch.Tensor) -> torch.Tensor:
         """

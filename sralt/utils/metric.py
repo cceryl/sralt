@@ -159,7 +159,7 @@ def compute_attack_metrics(
 
 class TPRatFPR(Metric):
     """
-    True Positive Rate (TPR) at a specified False Positive Rate (FPR).
+    TPR at a specified FPR, with tied scores grouped and linear ROC interpolation.
     """
     full_state_update = True
 
@@ -208,27 +208,24 @@ class TPRatFPR(Metric):
         if pos == 0 or neg == 0:
             return torch.tensor(float('nan'), device=preds.device)
 
-        tp = torch.cumsum(target == 1, dim=0)
-        fp = torch.cumsum(target == 0, dim=0)
+        # A threshold includes every sample with the same score at once
+        threshold_ends = torch.cat([
+            preds[:-1] != preds[1:],
+            torch.ones(1, dtype=torch.bool, device=preds.device)
+        ])
+        tp = torch.cumsum(target == 1, dim=0)[threshold_ends]
+        fp = torch.cumsum(target == 0, dim=0)[threshold_ends]
+        origin = torch.zeros(1, device=preds.device)
+        tpr = torch.cat([origin, tp / pos])
+        fpr = torch.cat([origin, fp / neg])
 
-        tpr = tp / pos
-        fpr = fp / neg
-
-        # Corner cases
-        if fpr[-1] < self.target_fpr:
+        # Use the last point on an FPR plateau, including at an exact match
+        idx = torch.searchsorted(fpr, fpr.new_tensor(self.target_fpr), right=True)
+        if idx == fpr.numel():
             return tpr[-1]
-
-        if fpr[0] >= self.target_fpr:
-            return tpr[0]
-
-        # Linear interpolation to find TPR at target FPR
-        idx = torch.searchsorted(fpr, torch.tensor(self.target_fpr, device=preds.device), right=False)
 
         fpr0, fpr1 = fpr[idx-1], fpr[idx]
         tpr0, tpr1 = tpr[idx-1], tpr[idx]
-
-        if fpr1 == fpr0:
-            return tpr1
 
         alpha = (self.target_fpr - fpr0) / (fpr1 - fpr0)
         result = tpr0 + alpha * (tpr1 - tpr0)

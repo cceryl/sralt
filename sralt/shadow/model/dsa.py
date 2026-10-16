@@ -60,6 +60,12 @@ class DSA(ShadowModel):
         self.social_branch = LightGCN(num_users + num_items, embed_dim, num_layers)
         self.behavioral_branch = LightGCN(num_users + num_items, embed_dim, num_layers)
 
+        self.random_neighbors: torch.Tensor
+        self.random_graph_initialized: torch.Tensor
+        if sim == 'random':
+            self.register_buffer('random_neighbors', torch.zeros((num_users, top_k), dtype=torch.long))
+            self.register_buffer('random_graph_initialized', torch.tensor(False))
+
     def _build_adj(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Build the sparse adjacency matrices for both augmented social graph and behavioral graph.
@@ -185,6 +191,7 @@ class DSA(ShadowModel):
         """
         Augments the social graph based on user similarity derived from behavioral interactions.
         Connect each user to their top-k most similar users according to the specified similarity criterion.
+        Random neighbors are sampled once and saved in the model state for reuse throughout the experiment.
 
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
@@ -194,21 +201,28 @@ class DSA(ShadowModel):
             return social_edge_index
 
         device = social_edge_index.device
-        behavioral_embeds = self.get_embedding('behavioral', social_edge_index, behavioral_edge_index)[:self.num_users]
+        if self.sim == 'random' and self.random_graph_initialized:
+            top_k_similar = self.random_neighbors
+        else:
+            behavioral_embeds = self.get_embedding('behavioral', social_edge_index, behavioral_edge_index)[:self.num_users]
 
-        match self.sim:
-            case 'cosine':
-                normalized_embeds = F.normalize(behavioral_embeds, p=2, dim=1)
-                similarity = normalized_embeds @ normalized_embeds.t()
-            case 'dot':
-                similarity = behavioral_embeds @ behavioral_embeds.t()
-            case 'random':
-                similarity = torch.rand((self.num_users, self.num_users), device=device)
-            case _:
-                raise ValueError(f'Invalid similarity criterion "{self.sim}".')
+            match self.sim:
+                case 'cosine':
+                    normalized_embeds = F.normalize(behavioral_embeds, p=2, dim=1)
+                    similarity = normalized_embeds @ normalized_embeds.t()
+                case 'dot':
+                    similarity = behavioral_embeds @ behavioral_embeds.t()
+                case 'random':
+                    similarity = torch.rand((self.num_users, self.num_users), device=device)
+                case _:
+                    raise ValueError(f'Invalid similarity criterion "{self.sim}".')
 
-        similarity.fill_diagonal_(float('-inf'))
-        top_k_similar: torch.Tensor = torch.topk(similarity, self.top_k, dim=1).indices
+            similarity.fill_diagonal_(float('-inf'))
+            top_k_similar = torch.topk(similarity, self.top_k, dim=1).indices
+
+            if self.sim == 'random':
+                self.random_neighbors.copy_(top_k_similar)
+                self.random_graph_initialized.fill_(True)
 
         source = torch.arange(self.num_users, device=device).unsqueeze(1).expand(-1, self.top_k).flatten()
         target = top_k_similar.flatten()
@@ -272,7 +286,7 @@ class DSA(ShadowModel):
                 total_loss += loss.item() * users.size(0)
                 total_samples += users.size(0)
 
-            average_loss = total_loss / total_samples if total_samples > 0 else float('nan')
+            average_loss = total_loss / total_samples
             if writer is not None:
                 writer.add_scalar(f'{branch_name}/Loss/train', average_loss, epoch)
 
@@ -372,14 +386,14 @@ class DSA(ShadowModel):
 
         self.eval()
 
-        behavioral_edge_index = to_undirected(data.behavioral_edge_index)
+        behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
         social_edge_index = self._augment_social_graph(data.social_edge_index, behavioral_edge_index)
 
         test_dataset = EvalShadowDataset(data, split='test', num_negatives=test_num_negatives)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
         metric_results = compute_recommendation_metrics(
-            embeds=self.get_embedding('both', social_edge_index, behavioral_edge_index),
+            embeds=self.get_embedding(self.feature, social_edge_index, behavioral_edge_index),
             metrics=metrics,
             eval_loader=test_loader
         )

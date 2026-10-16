@@ -82,7 +82,17 @@ class GDMSR(TargetModel):
         )
 
         self.social_edge_mask: torch.Tensor
-        self.register_buffer('social_edge_mask', torch.tensor([]))
+        self.register_buffer('social_edge_mask', torch.empty(0, dtype=torch.bool))
+
+    def _load_from_state_dict(
+        self, state_dict: dict, prefix: str, local_metadata: dict, strict: bool,
+        missing_keys: list[str], unexpected_keys: list[str], error_msgs: list[str]
+    ):
+        social_edge_mask: torch.Tensor = state_dict[prefix + 'social_edge_mask']
+        self.social_edge_mask = self.social_edge_mask.new_empty(social_edge_mask.size())
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
 
     def get_embedding(
         self, *, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor
@@ -156,6 +166,7 @@ class GDMSR(TargetModel):
             self.train()
 
             if epoch % self.curriculum_interval == 0:
+                self.eval()
                 confidence_scores, self.social_edge_mask = self.denoiser.denoise_social_graph(
                     item_history=item_history,
                     item_history_mask=item_history_mask,
@@ -163,6 +174,7 @@ class GDMSR(TargetModel):
                     confidence_scores=confidence_scores,
                     batch_size=val_batch_size
                 )
+                self.train()
 
             total_loss = 0.0
             total_samples = 0
@@ -190,7 +202,7 @@ class GDMSR(TargetModel):
                 total_loss += loss.item() * users.size(0)
                 total_samples += users.size(0)
 
-            average_loss = total_loss / total_samples if total_samples > 0 else float('nan')
+            average_loss = total_loss / total_samples
             if writer is not None:
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 

@@ -6,6 +6,26 @@ from torch_geometric.utils import to_undirected, negative_sampling
 
 from .data import AttackData
 
+
+def sample_negative_pairs(edge_index: torch.Tensor, num_users: int, num_samples: int) -> torch.Tensor:
+    """
+    Sample distinct undirected user pairs, represented once with u < v.
+    
+    :param edge_index: The undirected edge index of shape (2, num_edges).
+    :param num_users: The total number of users in the graph.
+    :param num_samples: The number of negative samples to generate.
+    :return: A tensor of shape (2, num_samples) containing the sampled negative user pairs.
+    """
+    edges = negative_sampling(
+        edge_index=to_undirected(edge_index),
+        num_nodes=num_users,
+        num_neg_samples=2 * num_samples,
+        method='dense',
+        force_undirected=True
+    )
+    return edges[:, edges[0] < edges[1]]
+
+
 class TrainAttackDataset(Dataset):
     """
     Dataset class for training data in attack models.
@@ -48,13 +68,9 @@ class TrainAttackDataset(Dataset):
         :return: A tuple containing the two user indices and the label.
         """
         if self.access_counter == 0:
-            sample_args = {
-                'edge_index': to_undirected(self.pos_edge_index),
-                'num_nodes': self.attack_data.num_users,
-                'num_neg_samples': self.num_negatives
-            }
-
-            self.neg_edge_index = negative_sampling(**sample_args, method='dense')
+            self.neg_edge_index = sample_negative_pairs(
+                self.pos_edge_index, self.attack_data.num_users, self.num_negatives
+            )
             self.edge_index = torch.cat([self.pos_edge_index, self.neg_edge_index], dim=1)
 
         self.access_counter = (self.access_counter + 1) % len(self)
@@ -85,12 +101,10 @@ class EvalAttackDataset(Dataset):
         self.split = split
 
         pos_edge_index = attack_data.val_social_edge_index if split == 'val' else attack_data.test_social_edge_index
-        neg_edge_index = negative_sampling(
+        neg_edge_index = sample_negative_pairs(
             edge_index=attack_data.shadow_social_edge_index if split == 'val' else attack_data.target_social_edge_index,
-            num_nodes=attack_data.num_users,
-            num_neg_samples=pos_edge_index.size(1),
-            method='dense',
-            force_undirected=False
+            num_users=attack_data.num_users,
+            num_samples=pos_edge_index.size(1)
         )
 
         self.edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=1)

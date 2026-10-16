@@ -1,5 +1,6 @@
 import os
 import copy
+import math
 import random
 import logging
 
@@ -68,6 +69,9 @@ class EarlyStopping:
         :param metric: The current validation metric (e.g., loss or accuracy).
         :return: True if training should be stopped, False otherwise.
         """
+        if not math.isfinite(metric):
+            raise FloatingPointError(f'Early stopping metric is not finite: {metric}.')
+
         if self.greater_is_better == (metric > self.best_metric) and abs(metric - self.best_metric) > self.epsilon:
             self.counter = 0
             self.best_metric = metric
@@ -122,5 +126,6 @@ class AdamWithGradientClipping(optim.AdamW):
         """
         Perform a single optimization step with gradient clipping.
         """
-        torch.nn.utils.clip_grad_norm_(self.param_groups[0]['params'], self.grad_clip_norm)
-        super().step(closure)
+        params = [param for group in self.param_groups for param in group['params']]
+        torch.nn.utils.clip_grad_norm_(params, self.grad_clip_norm)
+        return super().step(closure)

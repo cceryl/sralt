@@ -55,3 +55,7 @@ explicit = true
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["sralt*"]
+
+[tool.setuptools.package-data]
+"sralt.configs" = ["**/*.yaml"]

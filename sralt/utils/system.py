@@ -1,3 +1,4 @@
+import os
 import time
 import types
 import logging
@@ -39,6 +40,12 @@ def get_object_repr(obj: Any, visited: set[int] | None = None, max_depth: int = 
     if isinstance(obj, torch.Tensor):
         return f'torch.Tensor(fingerprint={tensor_fingerprint(obj)})'
 
+    if isinstance(obj, torch.device):
+        return 'torch.device'
+
+    if hasattr(obj, 'cache_key'):
+        return get_object_repr(getattr(obj, 'cache_key')(), visited, max_depth)
+
     if isinstance(obj, (list, tuple, set)):
         elements = [get_object_repr(e, visited, max_depth) for e in obj]
         match type(obj).__name__:
@@ -65,7 +72,8 @@ def disk_cache(
     hit: str = 'Loading cached result of function "{__cache__.func.__name__}" from "{__cache__.path}".',
     miss: str = 'Computing result of function "{__cache__.func.__name__}" and caching to "{__cache__.path}".',
     ignore: list[str] = [],
-    hook: Callable[[Any, dict[str, Any], types.SimpleNamespace], Any] | None = None
+    hook: Callable[[Any, dict[str, Any], types.SimpleNamespace], Any] | None = None,
+    dependencies: Callable[[dict[str, Any]], Any] | None = None
 ) -> Callable:
     """
     A decorator to cache the result of a function to disk.
@@ -78,6 +86,7 @@ def disk_cache(
     :param miss: Log format string for cache misses.
     :param ignore: List of argument names to ignore in cache key generation.
     :param hook: A function to be called on the result, with the arguments and cache namespace.
+    :param dependencies: Extra inputs such as source file metadata that affect the cached result.
     :return: The decorated function with caching capability.
     """
     def decorator(func: Callable) -> Callable:
@@ -91,15 +100,13 @@ def disk_cache(
             cache_dir_path = Path(cache_dir.format(**bound_args.arguments))
             cache_dir_path.mkdir(parents=True, exist_ok=True)
 
-            try:
-                key = (
-                    func.__name__,
-                    {k: get_object_repr(v) for k, v in bound_args.arguments.items() if k not in ignore}
-                )
-            except NotImplementedError as e:
-                raise RuntimeError(
-                    f'Failed to generate cache key for function "{func.__name__}", arguments: {bound_args.arguments}.'
-                ) from e
+            key = (
+                'sralt-cache',
+                os.environ.get('SRALT_CACHE_VERSION', 'default'),
+                func.__module__, func.__qualname__,
+                {k: get_object_repr(v) for k, v in bound_args.arguments.items() if k not in ignore},
+                get_object_repr(dependencies(bound_args.arguments)) if dependencies is not None else None
+            )
 
             key_bytes = pickle.dumps(key)
             key_hash = hashlib.md5(key_bytes).hexdigest()
@@ -108,24 +115,17 @@ def disk_cache(
 
             cache_ns = types.SimpleNamespace(func=func, hash=key_hash, path=cache_path)
 
-            if cache_path.is_file():
+            if cache_path.is_file() and os.environ.get('SRALT_CACHE_REFRESH') != '1':
                 logging.info(hit.format(**bound_args.arguments, __cache__=cache_ns))
                 with cache_path.open('rb') as f:
-                    cache_data = pickle.load(f)
-
-                if isinstance(cache_data, dict) and cache_data.get('key') == key:
-                    if hook is not None:
-                        return hook(cache_data['result'], bound_args.arguments, cache_ns)
-
-                    return cache_data['result']
-
-                logging.warning(f'Hash collision detected for cache file "{cache_path}". Recomputing the result.')
+                    result = pickle.load(f)
+                return hook(result, bound_args.arguments, cache_ns) if hook is not None else result
 
             logging.info(miss.format(**bound_args.arguments, __cache__=cache_ns))
             result = func(*args, **kwargs)
 
             with cache_path.open('wb') as f:
-                pickle.dump({'key': key, 'result': result}, f)
+                pickle.dump(result, f)
 
             if hook is not None:
                 result = hook(result, bound_args.arguments, cache_ns)
@@ -151,10 +151,22 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False, persistent: b
             delattr(get_device, '_cached_device')
         else:
             cached_device: torch.device = getattr(get_device, '_cached_device')
-            logging.info(
-                f'Using GPU: {torch.cuda.get_device_name(cached_device)} (index {cached_device.index}) from cache.'
-            )
+            if cached_device.type == 'cuda':
+                logging.info(
+                    f'Using GPU: {torch.cuda.get_device_name(cached_device)} (index {cached_device.index}) from cache.'
+                )
+            else:
+                logging.info('Using CPU from cache.')
             return cached_device
+
+    if not torch.cuda.is_available():
+        if not allow_cpu:
+            raise RuntimeError('CUDA is unavailable and CPU execution is disabled.')
+        device = torch.device('cpu')
+        if persistent:
+            setattr(get_device, '_cached_device', device)
+        logging.warning('CUDA is unavailable. Using CPU.')
+        return device
 
     def safe_cuda_call(func: Callable, *args, **kwargs):
         code, result = func(*args, **kwargs)
@@ -174,9 +186,8 @@ def get_device(allow_share: bool = False, allow_cpu: bool = False, persistent: b
 
         return uuid_to_cuda_id
 
+    pynvml.nvmlInit()
     try:
-        pynvml.nvmlInit()
-
         handles = [pynvml.nvmlDeviceGetHandleByIndex(physical_id) for physical_id in range(pynvml.nvmlDeviceGetCount())]
         uuid_to_cuda_id = get_uuid_to_cuda_id()
         uuid_to_handle = {pynvml.nvmlDeviceGetUUID(handle): handle for handle in handles}
@@ -234,11 +245,7 @@ def timer(format: str = 'Function "{__timer__.func.__name__}" took {__timer__.el
             start_time = time.time()
             start_counter = time.perf_counter()
 
-            try:
-                result = func(*args, **kwargs)
-            except:
-                logging.error(f'Timer failed for function "{func.__name__}" due to an exception.')
-                raise
+            result = func(*args, **kwargs)
 
             end_time = time.time()
             end_counter = time.perf_counter()

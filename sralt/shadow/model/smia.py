@@ -174,7 +174,7 @@ class SMIA(ShadowModel):
                 total_loss += loss.item() * users.size(0)
                 total_samples += users.size(0)
 
-            average_loss = total_loss / total_samples if total_samples > 0 else float('nan')
+            average_loss = total_loss / total_samples
             if writer is not None:
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 

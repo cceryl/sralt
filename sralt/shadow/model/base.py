@@ -1,4 +1,5 @@
 import typing
+from typing import Callable
 from abc import abstractmethod, ABC
 
 import torch
@@ -26,6 +27,12 @@ class ShadowModel(nn.Module, ABC):
 
         self.num_users = num_users
         self.num_items = num_items
+
+    def _apply(self, fn: Callable, recurse: bool = True):
+        if hasattr(self, '_adj_cache'):
+            del self._adj_cache
+
+        return super()._apply(fn, recurse=recurse)
 
     @abstractmethod
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')

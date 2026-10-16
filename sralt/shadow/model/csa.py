@@ -71,9 +71,6 @@ class CSA(ShadowModel):
             commitment_weight=commitment_weight
         )
 
-        self.user_codes: torch.Tensor
-        self.register_buffer('user_codes', torch.zeros((num_users, num_quantizers), dtype=torch.long))
-
     def _build_adj(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Build the sparse adjacency matrices for both augmented social graph and behavioral graph.
@@ -222,13 +219,13 @@ class CSA(ShadowModel):
         device = social_edge_index.device
 
         behavioral_embeds = self.get_embedding('behavioral', social_edge_index, behavioral_edge_index)
-        _, self.user_codes, _ = self.rvq(behavioral_embeds[:self.num_users])
+        _, user_codes, _ = self.rvq(behavioral_embeds[:self.num_users])
 
         offset = torch.arange(self.num_quantizers, device=device) * self.codebook_size
-        self.user_codes += offset.unsqueeze(0)
+        user_codes = user_codes + offset.unsqueeze(0)
 
         user_indices = torch.arange(self.num_users, device=device).repeat_interleave(self.num_quantizers)
-        code_indices = (self.user_codes + self.num_users + self.num_items).flatten()
+        code_indices = (user_codes + self.num_users + self.num_items).flatten()
 
         user_code_edge_index = torch.stack([user_indices, code_indices], dim=0)
         augmented_edge_index = torch.cat([social_edge_index, user_code_edge_index], dim=1)
@@ -276,18 +273,20 @@ class CSA(ShadowModel):
                 neg_edges = torch.stack([users, neg_items], dim=0)
                 node_ids = torch.cat([users, pos_items, neg_items])
 
-                pos_scores, commitment_loss_pos = self(branch, social_edge_index, behavioral_edge_index, pos_edges)
-                neg_scores, commitment_loss_neg = self(branch, social_edge_index, behavioral_edge_index, neg_edges)
+                scores, commitment_loss = self(
+                    branch, social_edge_index, behavioral_edge_index, torch.cat([pos_edges, neg_edges], dim=1)
+                )
+                pos_scores, neg_scores = scores.chunk(2)
                 recommendation_loss = self.recommendation_loss(branch, pos_scores, neg_scores, node_ids)
 
-                loss: torch.Tensor = recommendation_loss + commitment_loss_pos + commitment_loss_neg
+                loss: torch.Tensor = recommendation_loss + commitment_loss
                 loss.backward()
                 optimizer.step()
 
                 total_loss += loss.item() * users.size(0)
                 total_samples += users.size(0)
 
-            average_loss = total_loss / total_samples if total_samples > 0 else float('nan')
+            average_loss = total_loss / total_samples
             if writer is not None:
                 writer.add_scalar(f'{branch_name}/Loss/train', average_loss, epoch)
 
@@ -352,7 +351,7 @@ class CSA(ShadowModel):
             branch='behavioral',
             social_edge_index=data.social_edge_index,
             optimizer=instantiate(optimizer, params=self.behavioral_branch.parameters()),
-            early_stopping=instantiate(early_stopping, model=self.behavioral_branch),
+            early_stopping=instantiate(early_stopping, model=self),
             **common_kwargs
         )
 
@@ -387,14 +386,14 @@ class CSA(ShadowModel):
 
         self.eval()
 
-        behavioral_edge_index = to_undirected(data.behavioral_edge_index)
+        behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
         social_edge_index = self._augment_social_graph(data.social_edge_index, behavioral_edge_index)
 
         test_dataset = EvalShadowDataset(data, split='test', num_negatives=test_num_negatives)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
         metric_results = compute_recommendation_metrics(
-            embeds=self.get_embedding('both', social_edge_index, behavioral_edge_index),
+            embeds=self.get_embedding(self.feature, social_edge_index, behavioral_edge_index),
             metrics=metrics,
             eval_loader=test_loader
         )
