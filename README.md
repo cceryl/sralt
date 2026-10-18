@@ -90,3 +90,24 @@ python ./scripts/pipeline.py -m experiment=miner
 ## Output Structure
 
 Hydra writes single-run outputs to `runs/outputs/YYYY-MM-DD/HH-MM-SS` and multirun sweeps to `runs/multirun/YYYY-MM-DD/HH-MM-SS`. The pipeline also saves target, shadow, and attack data/model checkpoints inside each run directory.
+
+## Interactive Comparison Report
+
+Run `python scripts/comparison_report.py` to write `runs/comparison.html`, a single offline HTML file with filters, sortable tables, charts, seed averages/sample standard deviations, individual seed results, and CSV/JSON export. The page can hide combinations with no attack records across the selected seeds; partially missing combinations remain visible. Edit `DATASETS`, `TARGET_MODELS`, `MODEL_PAIRS`, `SEEDS`, and the display options at the top of the script. Dataset and target selections are crossed with the explicit shadow/attack pairs; this is independent of `experiment=comparison` and supports any compatible configured models. Default report targets are DESIGN, GDMSR, EGCL, and LightGCN; the training sweep preset is unchanged.
+
+By default the script reads its metric cache first, then tests matching trained model caches when metrics are absent. If a required trained model is missing, the result is marked missing without training. To also train missing models, explicitly enable:
+
+```bash
+python scripts/comparison_report.py --allow-training
+```
+
+CLI options override the script defaults, for example:
+
+```bash
+python scripts/comparison_report.py --datasets ciao --targets design lightgcn \
+  --pairs csa:mlp miner:miner miner:enminer --seeds 42 43 --allow-training
+```
+
+Attack tables report AUROC, F1, and TPR at 1% FPR for All/Head/Tail using the existing evaluation protocol. Select a Shadow/Attack pair in the page’s Baseline dropdown to show relative changes beside every attack metric: `(current - baseline) / baseline * 100%`. Comparisons match the dataset and target, and also the seed in individual-seed mode. Aggregated comparisons use each model’s mean over the selected available seeds, whose counts may differ. The reference remains available when its rows are hidden by Shadow/Attack filters. Missing or zero baseline values yield an undefined change (—). CSV export includes the chosen baseline and per-metric percentages; charts retain absolute values and include changes in their tooltips. Target/Shadow recommendation tests are disabled by default; enable them independently with `--target-metrics` and `--shadow-metrics`, then hide or show them in the page. Use `--no-target-metrics`, `--no-shadow-metrics`, or `--no-allow-training` to override enabled script defaults. `--dry-run` lists selected runs and metric cache availability without evaluating or writing HTML. Relative output paths resolve from the repository root.
+
+Only this script uses `.cache/comparison_report/`. Cache hits bypass model imports, loading, tensor fingerprinting, and testing. Keys include resolved stage dependencies, seeds, determinism, source/config contents, dataset file metadata, and `SRALT_CACHE_VERSION`. Target/Shadow metrics are shared across downstream model combinations. Same-configuration retraining or manual changes to training caches are not detected automatically: use `--refresh-metrics` to retest with existing model caches, without enabling training. `SRALT_CACHE_REFRESH=1` retains its pipeline meaning (including retraining) when training is allowed; it never enables training by itself. Existing pipeline runs do not populate this metric cache; the first report run tests their matching model caches automatically. `--dry-run` only checks metric cache availability and does not probe model caches. With training disabled, existing model caches are reused even if `SRALT_CACHE_REFRESH=1` is set; absent models remain missing. Run evaluations inside the project's Apptainer environment.
