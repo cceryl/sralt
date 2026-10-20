@@ -33,6 +33,9 @@ class AttackData:
     # Undirected shadow social graph edge index of shape (2, 2 * num_shadow_social_edges)
     shadow_social_edge_index: torch.Tensor
 
+    # All public relations, including held-out attack validation positives.
+    public_social_edge_index: torch.Tensor
+
     # Directed training, validation and test social graph edge indices
     train_social_edge_index: torch.Tensor
     val_social_edge_index: torch.Tensor
@@ -76,6 +79,7 @@ class AttackData:
 
         self.target_social_edge_index = self.target_social_edge_index.to(device)
         self.shadow_social_edge_index = self.shadow_social_edge_index.to(device)
+        self.public_social_edge_index = self.public_social_edge_index.to(device)
 
         self.train_social_edge_index = self.train_social_edge_index.to(device)
         self.val_social_edge_index = self.val_social_edge_index.to(device)
@@ -91,7 +95,7 @@ class AttackData:
         :param target_data: The target data.
         :param shadow_data: The shadow data.
         :param shadow_model: The shadow model.
-        :param val_ratio: The ratio of validation edges in the shadow social graph.
+        :param val_ratio: The public-edge validation ratio already applied before shadow training.
         """
         if repr(target_data) != shadow_data.target_data_repr:
             raise ValueError('The shadow data must be generated from the same target data.')
@@ -109,23 +113,23 @@ class AttackData:
 
         self.target_social_edge_index = target_data.social_edge_index
         self.shadow_social_edge_index = shadow_data.social_edge_index
+        self.public_social_edge_index = shadow_data.public_social_edge_index
+        if val_ratio != shadow_data.attack_val_ratio:
+            raise ValueError('Attack validation ratio must match the split made before shadow training.')
 
         def to_directed(edge_index: torch.Tensor) -> torch.Tensor:
             return edge_index[:, edge_index[0] <= edge_index[1]]
 
-        # Split shadow social edges into training and validation sets
-        directed_shadow_edges = to_directed(self.shadow_social_edge_index)
-        perm = torch.randperm(directed_shadow_edges.size(1), device=self.device)
-        num_val_edges = int(self.val_ratio * directed_shadow_edges.size(1))
-
-        self.train_social_edge_index = directed_shadow_edges[:, perm[num_val_edges:]]
-        self.val_social_edge_index = directed_shadow_edges[:, perm[:num_val_edges]]
+        # Reuse exactly the split made before training the shadow model.
+        directed_public_edges = to_directed(self.public_social_edge_index)
+        self.train_social_edge_index = shadow_data.attack_train_social_edge_index
+        self.val_social_edge_index = shadow_data.attack_val_social_edge_index
 
         # Test edges are unseen edges in the target social graph
         directed_target_edges = to_directed(self.target_social_edge_index)
 
         target_edge_ids = directed_target_edges[0] * self.num_users + directed_target_edges[1]
-        shadow_edge_ids = directed_shadow_edges[0] * self.num_users + directed_shadow_edges[1]
+        shadow_edge_ids = directed_public_edges[0] * self.num_users + directed_public_edges[1]
 
         unseen_mask = torch.isin(target_edge_ids, shadow_edge_ids, invert=True)
         self.test_social_edge_index = directed_target_edges[:, unseen_mask]
@@ -154,6 +158,7 @@ class AttackData:
     def cache_key(self) -> tuple:
         return (
             repr(self), self.num_users, self.target_social_edge_index, self.shadow_social_edge_index,
+            self.public_social_edge_index,
             self.train_social_edge_index, self.val_social_edge_index, self.test_social_edge_index, self.user_features
         )
 

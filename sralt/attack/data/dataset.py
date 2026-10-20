@@ -102,7 +102,7 @@ class EvalAttackDataset(Dataset):
 
         pos_edge_index = attack_data.val_social_edge_index if split == 'val' else attack_data.test_social_edge_index
         neg_edge_index = sample_negative_pairs(
-            edge_index=attack_data.shadow_social_edge_index if split == 'val' else attack_data.target_social_edge_index,
+            edge_index=attack_data.public_social_edge_index if split == 'val' else attack_data.target_social_edge_index,
             num_users=attack_data.num_users,
             num_samples=pos_edge_index.size(1)
         )

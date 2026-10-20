@@ -1,4 +1,5 @@
 name: SMIA
+revision: author-aligned-v1
 
 attribute:
   _target_: sralt.shadow.model.smia.SMIA

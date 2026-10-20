@@ -2,6 +2,7 @@ import logging
 
 import torch
 from omegaconf import DictConfig
+from typing_extensions import Self
 from torch_geometric.utils import to_undirected
 
 from sralt.target import TargetData, TargetModel
@@ -17,7 +18,7 @@ class ShadowData(TargetData):
         self,
         target_data: TargetData, target_model: TargetModel,
         shadow_social_ratio: float, num_recommendations: int,
-        inference_batch_size: int
+        inference_batch_size: int, attack_val_ratio: float
     ):
         """
         Initialize the shadow data.
@@ -27,6 +28,7 @@ class ShadowData(TargetData):
         :param shadow_social_ratio: The ratio of social edges to include in the shadow data.
         :param num_recommendations: The number of recommendations to generate for each user.
         :param inference_batch_size: The batch size for generating recommendations.
+        :param attack_val_ratio: Fraction of public relations reserved for attack validation.
         """
         # Store metadata
         super().__init__(name=target_data.name, directory=target_data.directory)
@@ -37,6 +39,7 @@ class ShadowData(TargetData):
 
         self.shadow_social_ratio = shadow_social_ratio
         self.num_recommendations = num_recommendations
+        self.attack_val_ratio = attack_val_ratio
 
         self.device = target_data.device
         self.num_users = target_data.num_users
@@ -50,7 +53,13 @@ class ShadowData(TargetData):
         perm = torch.randperm(directed_social_edge_index.size(1), device=target_data.device)
         selected_indices = perm[:num_shadow_social_edges]
 
-        self.social_edge_index = to_undirected(directed_social_edge_index[:, selected_indices])
+        public_edges = directed_social_edge_index[:, selected_indices]
+        self.public_social_edge_index = to_undirected(public_edges)
+        split_perm = torch.randperm(public_edges.size(1), device=self.device)
+        num_val_edges = int(attack_val_ratio * public_edges.size(1))
+        self.attack_train_social_edge_index = public_edges[:, split_perm[num_val_edges:]]
+        self.attack_val_social_edge_index = public_edges[:, split_perm[:num_val_edges]]
+        self.social_edge_index = to_undirected(self.attack_train_social_edge_index)
 
         # Generate recommendations for each user using the target model
         recommendations_edge_index = target_model.recommend(
@@ -82,14 +91,28 @@ class ShadowData(TargetData):
             f'target_data={self.target_data_repr}, '
             f'target_model={self.target_model_repr}, '
             f'shadow_social_ratio={self.shadow_social_ratio}, '
+            f'attack_val_ratio={self.attack_val_ratio}, '
+            f'social_split=attack-train-only-v1, '
             f'num_recommendations={self.num_recommendations})'
         )
+
+    def to(self, device: torch.device) -> Self:
+        super().to(device)
+        self.public_social_edge_index = self.public_social_edge_index.to(device)
+        self.attack_train_social_edge_index = self.attack_train_social_edge_index.to(device)
+        self.attack_val_social_edge_index = self.attack_val_social_edge_index.to(device)
+        return self
+
+    def cache_key(self) -> tuple:
+        return (super().cache_key(), self.public_social_edge_index,
+                self.attack_train_social_edge_index, self.attack_val_social_edge_index)
 
 
 @disk_cache(
     cache_dir='.cache/shadow/data/{target_data.name}/{target_model.__class__.__name__}',
     hit='Load cached shadow data "{target_data.name}" from "{__cache__.path}".',
-    miss='Generate shadow data from target data "{target_data.name}" and cache to "{__cache__.path}".'
+    miss='Generate shadow data from target data "{target_data.name}" and cache to "{__cache__.path}".',
+    dependencies=lambda args: args['config'].attack_val_ratio
 )
 def load_shadow_data(
     seed: int, deterministic: bool,
@@ -112,5 +135,6 @@ def load_shadow_data(
         target_model=target_model,
         shadow_social_ratio=config.shadow_social_ratio,
         num_recommendations=config.num_recommendations,
-        inference_batch_size=config.inference_batch_size
+        inference_batch_size=config.inference_batch_size,
+        attack_val_ratio=config.attack_val_ratio
     )

@@ -34,11 +34,9 @@ class MLP(AttackModel):
         self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
         self.net = nn.Sequential(
             nn.Linear(4 * user_feature_dim, 4 * user_feature_dim),
-            nn.BatchNorm1d(4 * user_feature_dim),
             nn.LeakyReLU(leaky_relu_slope),
             nn.Dropout(dropout),
             nn.Linear(4 * user_feature_dim, 2 * user_feature_dim),
-            nn.BatchNorm1d(2 * user_feature_dim),
             nn.LeakyReLU(leaky_relu_slope),
             nn.Dropout(dropout),
             nn.Linear(2 * user_feature_dim, 1)

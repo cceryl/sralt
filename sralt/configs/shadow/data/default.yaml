@@ -1,3 +1,5 @@
 shadow_social_ratio: 0.1
+revision: attack-train-only-v1
+attack_val_ratio: ${attack.data.val_ratio}
 num_recommendations: 30
 inference_batch_size: 1024
