@@ -25,7 +25,7 @@ def build_item_history(
     device = behavioral_edge_index.device
     users, items = behavioral_edge_index.long()
 
-    item_history = torch.zeros((num_users, sequence_length), dtype=torch.long, device=device)
+    item_history = torch.full((num_users, sequence_length), num_users, dtype=torch.long, device=device)
     item_history_mask = torch.ones((num_users, sequence_length), dtype=torch.bool, device=device)
 
     # Calculate item popularity.
@@ -37,7 +37,7 @@ def build_item_history(
     max_score = scores.max().item() + 1
 
     sort_keys = users * max_score + (max_score - 1 - scores)
-    sorted_idx = torch.argsort(sort_keys)
+    sorted_idx = torch.argsort(sort_keys, stable=True)
     sorted_users = users[sorted_idx]
     sorted_items = items[sorted_idx]
 
@@ -89,16 +89,18 @@ def sample_social_relations(
     user_degrees = degrees[users]
     rand_offsets = (torch.rand(num_samples, device=device) * user_degrees).floor().long()
 
-    pos_indices = user_starts + rand_offsets
-    pos_samples = dst[pos_indices]
+    pos_samples = users.clone()
+    active = user_degrees > 0
+    pos_indices = user_starts[active] + rand_offsets[active]
+    pos_samples[active] = dst[pos_indices]
 
-    # Negative sampling
+    # The release excludes retained friends; a user's own ID remains a candidate.
     pos_idx = src * num_users + dst
 
     neg_samples = torch.randint(0, num_users, (num_samples,), device=device, dtype=torch.long)
     neg_idx = users * num_users + neg_samples
 
-    conflict_mask = torch.isin(neg_idx, pos_idx) | (neg_samples == users)
+    conflict_mask = torch.isin(neg_idx, pos_idx)
     conflicts = conflict_mask.nonzero(as_tuple=True)[0]
 
     while conflicts.numel() > 0:
@@ -106,7 +108,7 @@ def sample_social_relations(
         neg_samples[conflicts] = replacement
         neg_idx = users[conflicts] * num_users + replacement
 
-        conflict_mask = torch.isin(neg_idx, pos_idx) | (replacement == users[conflicts])
+        conflict_mask = torch.isin(neg_idx, pos_idx)
         conflicts = conflicts[conflict_mask]
 
     return pos_samples, neg_samples
@@ -122,6 +124,7 @@ class DenoiserDataset(Dataset):
         :param data: An instance of the Data class containing graph data.
         """
         self.rec_dataset = TrainTargetDataset(data)
+        self.social_edge_index = data.social_edge_index
 
         self.positive_peers = torch.tensor([])
         self.negative_peers = torch.tensor([])
@@ -136,7 +139,7 @@ class DenoiserDataset(Dataset):
         if self.rec_dataset.access_counter == 0:
             self.positive_peers, self.negative_peers = sample_social_relations(
                 users=self.rec_dataset.users,
-                edge_index=self.rec_dataset.data.social_edge_index,
+                edge_index=self.social_edge_index,
                 num_users=self.rec_dataset.data.num_users,
             )
 

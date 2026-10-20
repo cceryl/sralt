@@ -8,13 +8,16 @@ MINER and En_MINER are also available as social-relation attack baselines, follo
 
 ## Project Structure
 
-- `docs/`: research protocol, architecture, model design, and development guidance; start with [docs/README.md](docs/README.md)
+- `docs/`: current protocol and running guide, with reference material in `docs/archive/` and dated history in `docs/legacy/`; start with [docs/README.md](docs/README.md)
+- [todo.md](todo.md): current status and TODOs by protocol, target models, attacks (shadow design, attack design, baselines), defenses, and experiments; includes priorities, commands, and implementation prerequisites
 - `scripts/`: scripts for end-to-end training and evaluation
 - `sralt/`: package source code
 - `sralt/configs/`: Hydra configuration files
 - `data/`: dataset files
 - `runs/`: Hydra outputs and experiment results
 - `.cache/`: local cache for generated intermediate artifacts to speed up subsequent runs
+
+GDMSR and EGCL follow the authors’ released model logic within SRALT’s shared protocol. Their configurations include `revision: author-aligned-v1` to separate corrected model caches from earlier implementations. See [the reproduction and cache migration notes](docs/archive/target-reproduction.md).
 
 ## Installation
 
@@ -79,7 +82,7 @@ python ./scripts/pipeline.py target/data=ciao target/model=design shadow/model=m
 
 MINER uses four distances (L1, L2, cosine, Bray-Curtis) from one user's K recommended items to the other user's embedding, giving `4K` attack features. En_MINER concatenates both directions, giving `8K` features. Both use the learned social embedding table and the SMIA authors' MLP architecture, unweighted binary cross entropy, and SGD with gradient clipping. Shadow training reuses SRALT's SMIA training settings; relation splits, negative sampling, validation selection, and All/Head/Tail metrics follow SRALT's protocol.
 
-These reproduce the social baselines released with SMIA, which omit the original interaction-level MINER's knowledge graph, bilateral attack network, and cumulative learning. See [the reproduction notes](docs/miner-reproduction.md) for sources and implementation differences.
+These reproduce the social baselines released with SMIA, which omit the original interaction-level MINER's knowledge graph, bilateral attack network, and cumulative learning. See [the reproduction notes](docs/archive/miner-reproduction.md) for sources and implementation differences.
 
 The dedicated sweep covers both attack modes, three datasets, three social target models, and five seeds (90 sequential runs):
 
@@ -108,6 +111,6 @@ python scripts/comparison_report.py --datasets ciao --targets design lightgcn \
   --pairs csa:mlp miner:miner miner:enminer --seeds 42 43 --allow-training
 ```
 
-Attack tables report AUROC, F1, and TPR at 1% FPR for All/Head/Tail using the existing evaluation protocol. Select a Shadow/Attack pair in the page’s Baseline dropdown to show relative changes beside every attack metric: `(current - baseline) / baseline * 100%`. Comparisons match the dataset and target, and also the seed in individual-seed mode. Aggregated comparisons use each model’s mean over the selected available seeds, whose counts may differ. The reference remains available when its rows are hidden by Shadow/Attack filters. Missing or zero baseline values yield an undefined change (—). CSV export includes the chosen baseline and per-metric percentages; charts retain absolute values and include changes in their tooltips. Target/Shadow recommendation tests are disabled by default; enable them independently with `--target-metrics` and `--shadow-metrics`, then hide or show them in the page. Use `--no-target-metrics`, `--no-shadow-metrics`, or `--no-allow-training` to override enabled script defaults. `--dry-run` lists selected runs and metric cache availability without evaluating or writing HTML. Relative output paths resolve from the repository root.
+Attack tables report AUROC, F1, and TPR at 1% FPR for All/Head/Tail using the existing evaluation protocol. Select a Shadow/Attack pair in the page’s Baseline dropdown to show relative changes beside every attack metric: `(current - baseline) / baseline * 100%`. Comparisons match the dataset and target, and also the seed in individual-seed mode. Aggregated comparisons use each model’s mean over the selected available seeds, whose counts may differ. The reference remains available when its rows are hidden by Shadow/Attack filters. Missing or zero baseline values yield an undefined change (—). CSV export includes the chosen baseline and per-metric percentages; charts retain absolute values and include changes in their tooltips. Target/Shadow recommendation tests are enabled by default; control them independently with `--target-metrics` / `--no-target-metrics` and `--shadow-metrics` / `--no-shadow-metrics`, then hide or show them in the page. Use `--no-target-metrics`, `--no-shadow-metrics`, or `--no-allow-training` to override enabled script defaults. `--dry-run` lists selected runs and metric cache availability without evaluating or writing HTML. Relative output paths resolve from the repository root.
 
 Only this script uses `.cache/comparison_report/`. Cache hits bypass model imports, loading, tensor fingerprinting, and testing. Keys include resolved stage dependencies, seeds, determinism, source/config contents, dataset file metadata, and `SRALT_CACHE_VERSION`. Target/Shadow metrics are shared across downstream model combinations. Same-configuration retraining or manual changes to training caches are not detected automatically: use `--refresh-metrics` to retest with existing model caches, without enabling training. `SRALT_CACHE_REFRESH=1` retains its pipeline meaning (including retraining) when training is allowed; it never enables training by itself. Existing pipeline runs do not populate this metric cache; the first report run tests their matching model caches automatically. `--dry-run` only checks metric cache availability and does not probe model caches. With training disabled, existing model caches are reused even if `SRALT_CACHE_REFRESH=1` is set; absent models remain missing. Run evaluations inside the project's Apptainer environment.

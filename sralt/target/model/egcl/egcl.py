@@ -2,16 +2,14 @@ import logging
 import typing
 
 import torch
-from tqdm import tqdm
 from omegaconf import DictConfig
 from torch.optim import Optimizer
 from hydra.utils import instantiate
 from torch_geometric.utils import to_undirected
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.nn.models.lightgcn import BPRLoss
 from torch_geometric.metrics.link_pred import LinkPredMetric
 
-from .data import EGCLDataset
+from .weight import AdaptiveWeight, l2_loss
 from .dcl import DualContrastiveLearning
 from .gap import GraphAdaptivePropagation
 from sralt.target.model import TargetModel
@@ -32,32 +30,43 @@ class EGCL(TargetModel):
         num_items: int,
         embed_dim: int,
         num_layers: int,
-        decay: float,
+        embedding_reg: float,
+        weight_reg: float,
+        beta: float,
         temperature: float,
         intra_reg: float,
-        inter_reg: float
+        inter_reg: float,
+        contrastive_batch_size: int
     ):
         """
         :param num_users: Number of users in the dataset.
         :param num_items: Number of items in the dataset.
         :param embed_dim: Dimension of the node embeddings.
         :param num_layers: Number of graph convolution layers in the propagation module.
-        :param decay: Regularization coefficient for embeddings and model parameters.
+        :param embedding_reg: Half-squared-norm regularization for initial embeddings.
+        :param weight_reg: Half-squared-norm regularization for weight networks and readouts.
+        :param beta: Weight of the social supervised loss.
         :param temperature: Temperature parameter for the InfoNCE loss in dual contrastive learning.
         :param intra_reg: Regularization coefficient for intra-view contrastive loss.
         :param inter_reg: Regularization coefficient for inter-view contrastive loss.
+        :param contrastive_batch_size: Anchor chunk size; all nodes remain in the denominator.
         """
         super().__init__(num_users, num_items)
 
         self.embed_dim = embed_dim
         self.num_layers = num_layers
-        self.decay = decay
+        self.embedding_reg = embedding_reg
+        self.weight_reg = weight_reg
+        self.beta = beta
+        self.contrastive_batch_size = contrastive_batch_size
         self.temperature = temperature
         self.intra_reg = intra_reg
         self.inter_reg = inter_reg
 
-        self.gap = GraphAdaptivePropagation(num_users, num_items, embed_dim, num_layers, decay)
-        self.dcl = DualContrastiveLearning(temperature, intra_reg, inter_reg)
+        self.gap = GraphAdaptivePropagation(num_users, num_items, embed_dim, num_layers)
+        self.dcl = DualContrastiveLearning(temperature, intra_reg, inter_reg, contrastive_batch_size)
+        self.behavioral_weight = AdaptiveWeight(embed_dim, offset=8.0)
+        self.social_weight = AdaptiveWeight(embed_dim, offset=10.0)
 
     def get_embedding(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
         """
@@ -66,81 +75,69 @@ class EGCL(TargetModel):
         :param behavioral_edge_index: Undirected edge index of shape (2, num_behavioral_edges) for the user-item behavioral graph.
         :return: Node embeddings of shape (num_users + num_items, embed_dim).
         """
-        behavioral_embeds, social_embeds = self.gap(social_edge_index, behavioral_edge_index)
-
-        user_embeds = (behavioral_embeds[:self.num_users] + social_embeds) / 2
-        item_embeds = behavioral_embeds[self.num_users:]
-
-        return torch.cat([user_embeds, item_embeds], dim=0)
-
-    def _compute_scores(self, embeds: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the scores for the given edge index based on the node embeddings.
-        :param embeds: Node embeddings of shape (num_users + num_items, embed_dim).
-        :param edge_index: Edge index of shape (2, num_edges) for which to compute the scores.
-        :return: Scores for each edge in the edge index of shape (num_edges,).
-        """
-        src, dst = edge_index
-        scores = (embeds[src] * embeds[dst]).sum(dim=1)
-
-        return scores
+        behavioral_embeds, _ = self.gap(social_edge_index, behavioral_edge_index)
+        return behavioral_embeds
 
     def forward(
         self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor,
-        users: torch.Tensor, pos_items: torch.Tensor, neg_items: torch.Tensor, pos_peers: torch.Tensor, neg_peers: torch.Tensor
+        batch_size: int, *, weight_phase: bool = False
     ) -> torch.Tensor:
+        """Full-graph supervised objective, with separate weight/embedding phases.
+
+        ``batch_size`` partitions positive corrections without sampling or averaging.
+        Weight networks remain differentiable w.r.t. embeddings in the embedding phase.
         """
-        Forward pass to compute the BPR loss and the dual contrastive learning loss.
-        :param social_edge_index: Undirected edge index of shape (2, num_social_edges) for the user-user social graph.
-        :param behavioral_edge_index: Undirected edge index of shape (2, num_behavioral_edges) for the user-item behavioral graph.
-        :param users: Tensor of shape (batch_size,) containing user indices in the batch.
-        :param pos_items: Tensor of shape (batch_size,) containing positive item indices for the recommendation loss.
-        :param neg_items: Tensor of shape (batch_size,) containing negative item indices for the recommendation loss.
-        :param pos_peers: Tensor of shape (batch_size,) containing positive peer indices for the social loss.
-        :param neg_peers: Tensor of shape (batch_size,) containing negative peer indices for the social loss.
-        :return: Scalar tensor of the total loss.
-        """
-        behavioral_embeds, social_embeds = self.gap(social_edge_index, behavioral_edge_index)
-        cl_loss = self.dcl(
-            social_edge_index, behavioral_edge_index, behavioral_embeds, social_embeds,
-            users=torch.cat([users, pos_peers, neg_peers], dim=0),
-            items=torch.cat([pos_items, neg_items], dim=0)
+        if weight_phase:
+            with torch.no_grad():
+                behavioral_embeds, social_embeds = self.gap(social_edge_index, behavioral_edge_index)
+        else:
+            behavioral_embeds, social_embeds = self.gap(social_edge_index, behavioral_edge_index)
+
+        interactions = behavioral_edge_index[:, behavioral_edge_index[0] < self.num_users].clone()
+        interactions[1] -= self.num_users
+        behavioral_loss = self.behavioral_weight.square_loss(
+            behavioral_embeds[:self.num_users], behavioral_embeds[self.num_users:],
+            interactions, batch_size, include_constant=weight_phase
         )
+        social_loss = self.social_weight.square_loss(
+            social_embeds, social_embeds, social_edge_index, batch_size, include_constant=weight_phase
+        )
+        if weight_phase:
+            behavioral_loss = behavioral_loss + self.weight_reg * l2_loss(self.behavioral_weight.parameters())
+            social_loss = social_loss + self.weight_reg * l2_loss(self.social_weight.parameters())
+            return behavioral_loss + self.beta * social_loss
 
-        behavioral_pos_scores = self._compute_scores(behavioral_embeds, torch.stack([users, pos_items], dim=0))
-        behavioral_neg_scores = self._compute_scores(behavioral_embeds, torch.stack([users, neg_items], dim=0))
-        behavioral_nodes = torch.cat([users, pos_items, neg_items])
-        behavioral_loss = self.gap.compute_loss(behavioral_pos_scores, behavioral_neg_scores, behavioral_nodes)
-
-        social_pos_scores = self._compute_scores(social_embeds, torch.stack([users, pos_peers], dim=0))
-        social_neg_scores = self._compute_scores(social_embeds, torch.stack([users, neg_peers], dim=0))
-        social_nodes = torch.cat([users, pos_peers, neg_peers])
-        social_loss = self.gap.compute_loss(social_pos_scores, social_neg_scores, social_nodes)
-
-        return behavioral_loss + social_loss + cl_loss
+        behavioral_loss = behavioral_loss + self.embedding_reg * l2_loss([
+            self.gap.user_embeds.weight, self.gap.item_embeds.weight
+        ]) + self.weight_reg * l2_loss([
+            *self.gap.behavioral_user_readout.parameters(), *self.gap.behavioral_item_readout.parameters()
+        ])
+        social_loss = social_loss + self.weight_reg * l2_loss(self.gap.social_readout.parameters())
+        return behavioral_loss + self.beta * social_loss + self.dcl(
+            social_edge_index, behavioral_edge_index, behavioral_embeds, social_embeds
+        )
 
     def _train_model(
         self, *, data: TargetData, writer: SummaryWriter | None,
         train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
-        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping
+        optimizer: Optimizer, weight_optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping
     ):
         """
         Internal method to train the EGCL model.
 
         :param data: Target data object.
         :param writer: Optional TensorBoard writer.
-        :param train_batch_size: Training batch size.
+        :param train_batch_size: Positive-edge chunk size for the exact full-graph loss.
         :param val_batch_size: Validation batch size.
         :param val_num_negatives: Number of negatives per validation sample.
         :param num_epochs: Number of training epochs.
         :param optimizer: Optimizer instance.
+        :param weight_optimizer: Separate optimizer for the adaptive weight networks.
         :param metrics: Validation metric calculators.
         :param early_stopping: Early stopping controller.
         """
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
-        train_dataset = EGCLDataset(data)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
@@ -153,30 +150,20 @@ class EGCL(TargetModel):
         for epoch in range(1, num_epochs + 1):
             self.train()
 
-            total_loss = 0.0
-            total_samples = 0
+            weight_optimizer.zero_grad(set_to_none=True)
+            weight_loss = self(
+                data.social_edge_index, undirected_behavioral_edge_index,
+                train_batch_size, weight_phase=True
+            )
+            weight_loss.backward()
+            weight_optimizer.step()
+            weight_optimizer.zero_grad(set_to_none=True)
 
-            for users, pos_items, neg_items, pos_peers, neg_peers in tqdm(train_loader, desc=f'Epoch {epoch}/{num_epochs}'):
-                optimizer.zero_grad()
-
-                users: torch.Tensor
-                loss: torch.Tensor = self(
-                    social_edge_index=data.social_edge_index,
-                    behavioral_edge_index=undirected_behavioral_edge_index,
-                    users=users,
-                    pos_items=pos_items,
-                    neg_items=neg_items,
-                    pos_peers=pos_peers,
-                    neg_peers=neg_peers
-                )
-
-                loss.backward()
-                optimizer.step()
-
-                total_loss += loss.item() * users.size(0)
-                total_samples += users.size(0)
-
-            average_loss = total_loss / total_samples if total_samples > 0 else float('nan')
+            optimizer.zero_grad(set_to_none=True)
+            loss = self(data.social_edge_index, undirected_behavioral_edge_index, train_batch_size)
+            torch.autograd.backward(loss, inputs=list(self.gap.parameters()))
+            optimizer.step()
+            average_loss = loss.item()
             if writer is not None:
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
@@ -210,7 +197,7 @@ class EGCL(TargetModel):
 
         :param data: Target data object.
         :param writer: Optional TensorBoard writer.
-        :param train_batch_size: Training batch size.
+        :param train_batch_size: Positive-edge chunk size for the exact full-graph loss.
         :param val_batch_size: Validation batch size.
         :param val_num_negatives: Number of negatives per validation sample.
         :param num_epochs: Number of training epochs.
@@ -221,9 +208,6 @@ class EGCL(TargetModel):
         if kwargs:
             logging.warning(f'Ignoring unexpected additional training config parameters: {kwargs}')
 
-        embed_params = [param for name, param in self.named_parameters() if 'embeds' in name]
-        other_params = [param for name, param in self.named_parameters() if 'embeds' not in name]
-
         self._train_model(
             data=data,
             writer=writer,
@@ -231,12 +215,10 @@ class EGCL(TargetModel):
             val_batch_size=val_batch_size,
             val_num_negatives=val_num_negatives,
             num_epochs=num_epochs,
-            optimizer=instantiate(optimizer, _partial_=True)(
-                params=[
-                    {'params': embed_params, 'weight_decay': 0.0},
-                    {'params': other_params, 'weight_decay': self.decay}
-                ]
-            ),
+            optimizer=instantiate(optimizer, params=self.gap.parameters()),
+            weight_optimizer=instantiate(optimizer, params=[
+                *self.behavioral_weight.parameters(), *self.social_weight.parameters()
+            ]),
             metrics=instantiate(metrics),
             early_stopping=instantiate(early_stopping, model=self),
         )
@@ -300,7 +282,10 @@ class EGCL(TargetModel):
             f'num_items={self.num_items}, '
             f'embed_dim={self.embed_dim}, '
             f'num_layers={self.num_layers}, '
-            f'decay={self.decay}, '
+            f'embedding_reg={self.embedding_reg}, '
+            f'weight_reg={self.weight_reg}, '
+            f'beta={self.beta}, '
+            f'contrastive_batch_size={self.contrastive_batch_size}, '
             f'temperature={self.temperature}, '
             f'intra_reg={self.intra_reg}, '
             f'inter_reg={self.inter_reg}, '

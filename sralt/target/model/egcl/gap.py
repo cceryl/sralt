@@ -1,11 +1,12 @@
 import math
+from typing import Callable
 import typing
 
 import torch
 import torch.nn as nn
 from torch_geometric.utils import degree
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
-from torch_geometric.nn.models.lightgcn import LGConv, BPRLoss
+from torch_geometric.nn import LGConv
 
 
 class AttentiveAggregation(nn.Module):
@@ -25,6 +26,9 @@ class AttentiveAggregation(nn.Module):
             nn.Linear(embed_dim, 1, bias=False),
             nn.Softmax(dim=1)
         )
+        nn.init.trunc_normal_(self.attention[0].weight, std=0.01, a=-0.02, b=0.02)
+        nn.init.trunc_normal_(self.attention[0].bias, std=0.01, a=-0.02, b=0.02)
+        nn.init.ones_(self.attention[2].weight)
 
     def forward(self, embeds: torch.Tensor, layer_embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -32,11 +36,9 @@ class AttentiveAggregation(nn.Module):
         :param layer_embeds: Embeddings from each layer of shape (num_nodes, num_layers, embed_dim).
         :return: Final embeddings after attentive readout of shape (num_nodes, embed_dim).
         """
-        all_embeds = torch.cat([embeds.unsqueeze(1), layer_embeds], dim=1)
-        embeds = embeds.unsqueeze(1).expand_as(all_embeds)
-
-        weights: torch.Tensor = self.attention(torch.cat([embeds, all_embeds], dim=-1))
-        return (weights * all_embeds).sum(dim=1)
+        initial = embeds.unsqueeze(1).expand_as(layer_embeds)
+        weights = self.attention(torch.cat([layer_embeds, initial], dim=-1))
+        return (weights * layer_embeds).sum(dim=1)
 
 
 class AdaptivePropagation(nn.Module):
@@ -44,19 +46,27 @@ class AdaptivePropagation(nn.Module):
     Adaptive Neighbor Aggregation module in EGCL.
     """
 
-    def __init__(self, num_layers: int):
+    def __init__(self, num_layers: int, degree_scale: float = 1.0):
         """
         :param num_layers: Number of propagation layers.
         """
         super().__init__()
 
         self.num_layers = num_layers
+        self.degree_scale = degree_scale
         self.conv = LGConv(normalize=False)
 
         self._edge_index: torch.Tensor | None = None
         self._num_nodes = -1
         self._weights = torch.tensor([])
         self._degrees = torch.tensor([])
+
+    def _apply(self, fn: Callable, recurse: bool = True):
+        self._edge_index = None
+        self._num_nodes = -1
+        self._weights = torch.tensor([])
+        self._degrees = torch.tensor([])
+        return super()._apply(fn, recurse=recurse)
 
     def _get_weights(self, edge_index: torch.Tensor, num_nodes: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -77,7 +87,7 @@ class AdaptivePropagation(nn.Module):
         )
 
         degrees = degree(edge_index[0], num_nodes=num_nodes)
-        self._degrees = degrees.clamp(min=1e-7).log().sigmoid()
+        self._degrees = (self.degree_scale * degrees + 1e-7).log().sigmoid()
 
         return self._weights, self._degrees
 
@@ -85,7 +95,6 @@ class AdaptivePropagation(nn.Module):
         """
         :param embeds: Initial embeddings of shape (num_nodes, embed_dim).
         :param edge_index: Edge indices of shape (2, num_edges).
-        :param degrees: Normalized degree tensor of shape (num_nodes,).
         :return: Embeddings after adaptive propagation of shape (num_nodes, num_layers, embed_dim).
         """
         all_embeds = []
@@ -104,13 +113,12 @@ class GraphAdaptivePropagation(nn.Module):
     Graph Adaptive Propagation module in EGCL.
     """
 
-    def __init__(self, num_users: int, num_items: int, embed_dim: int, num_layers: int, decay: float):
+    def __init__(self, num_users: int, num_items: int, embed_dim: int, num_layers: int):
         """
         :param num_users: Number of users.
         :param num_items: Number of items.
         :param embed_dim: Dimension of the embeddings.
         :param num_layers: Number of propagation layers.
-        :param decay: Decay factor for the BPR loss.
         """
         super().__init__()
 
@@ -119,17 +127,18 @@ class GraphAdaptivePropagation(nn.Module):
         self.embed_dim = embed_dim
         self.num_layers = num_layers
 
-        self.social_embeds = nn.Embedding(num_users, embed_dim)
-        self.behavioral_embeds = nn.Embedding(num_users + num_items, embed_dim)
+        self.user_embeds = nn.Embedding(num_users, embed_dim)
+        self.item_embeds = nn.Embedding(num_items, embed_dim)
+        nn.init.xavier_uniform_(self.user_embeds.weight)
+        nn.init.xavier_uniform_(self.item_embeds.weight)
 
-        self.social_propagate = AdaptivePropagation(num_layers)
+        # The release forms S + S.T even when S already contains both directions.
+        self.social_propagate = AdaptivePropagation(num_layers, degree_scale=2.0)
         self.behavioral_propagate = AdaptivePropagation(num_layers)
 
         self.social_readout = AttentiveAggregation(embed_dim)
         self.behavioral_user_readout = AttentiveAggregation(embed_dim)
         self.behavioral_item_readout = AttentiveAggregation(embed_dim)
-
-        self.loss_fn = BPRLoss(lambda_reg=decay)
 
     def forward(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -137,31 +146,16 @@ class GraphAdaptivePropagation(nn.Module):
         :param behavioral_edge_index: Undirected edge index of shape (2, num_behavioral_edges) for the user-item behavioral graph.
         :return: Behavioral embeddings of shape (num_users + num_items, embed_dim) and social embeddings of shape (num_users, embed_dim).
         """
-        social_layer_embeds = self.social_propagate(self.social_embeds.weight, social_edge_index)
-        behavioral_layer_embeds = self.behavioral_propagate(self.behavioral_embeds.weight, behavioral_edge_index)
+        initial = torch.cat([self.user_embeds.weight, self.item_embeds.weight])
+        social_layer_embeds = self.social_propagate(self.user_embeds.weight, social_edge_index)
+        behavioral_layer_embeds = self.behavioral_propagate(initial, behavioral_edge_index)
 
-        social_user_embeds = self.social_readout(self.social_embeds.weight, social_layer_embeds)
+        social_user_embeds = self.social_readout(self.user_embeds.weight, social_layer_embeds)
         behavioral_user_embeds = self.behavioral_user_readout(
-            self.behavioral_embeds.weight[:self.num_users], behavioral_layer_embeds[:self.num_users]
+            self.user_embeds.weight, behavioral_layer_embeds[:self.num_users]
         )
         behavioral_item_embeds = self.behavioral_item_readout(
-            self.behavioral_embeds.weight[self.num_users:], behavioral_layer_embeds[self.num_users:]
+            self.item_embeds.weight, behavioral_layer_embeds[self.num_users:]
         )
 
         return torch.cat([behavioral_user_embeds, behavioral_item_embeds], dim=0), social_user_embeds
-
-    def compute_loss(self, pos_scores: torch.Tensor, neg_scores: torch.Tensor, nodes: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the BPR loss for training.
-        :param pos_scores: Predicted scores for positive samples of shape (batch_size,).
-        :param neg_scores: Predicted scores for negative samples of shape (batch_size,).
-        :param nodes: Node indices corresponding to the scores of shape (3 * batch_size,). 
-        :return: BPR loss value as a scalar tensor.
-        """
-        user_nodes = nodes[nodes < self.num_users]
-
-        social_node_embeds = self.social_embeds(user_nodes)
-        behavioral_node_embeds = self.behavioral_embeds(nodes)
-        node_embeds = torch.cat([social_node_embeds, behavioral_node_embeds], dim=0)
-
-        return self.loss_fn(pos_scores, neg_scores, node_embeds)

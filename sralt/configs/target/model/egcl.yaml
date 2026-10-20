@@ -1,16 +1,20 @@
 name: EGCL
+revision: author-aligned-v1
 
 attribute:
   _target_: sralt.target.model.egcl.EGCL
   embed_dim: 64
-  num_layers: 2
-  decay: 1e-4
+  num_layers: 3
+  embedding_reg: 2.0
+  weight_reg: 60.0
+  beta: 0.3
+  contrastive_batch_size: 1024
   temperature: 0.05
-  intra_reg: 1e-4
-  inter_reg: 1e-4
+  intra_reg: 1e-6
+  inter_reg: 1e-8
 
 train:
-  train_batch_size: 8192
+  train_batch_size: 8192  # Positive-edge chunks; one full-graph update per epoch.
   val_batch_size: 4096
   val_num_negatives: 999
   num_epochs: 300

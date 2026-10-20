@@ -102,15 +102,16 @@ class GDMSR(TargetModel):
 
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social relations.
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing user-item interactions.
-        :return: Tensor of shape (num_nodes, embed_dim) containing user and item embeddings.
+        :return: Tensor of shape (num_nodes, (num_layers + 1) * embed_dim).
         """
-        if self.social_edge_mask.numel() != social_edge_index.size(1):
-            self.social_edge_mask = torch.ones_like(social_edge_index[0], dtype=torch.bool)
+        mask = self.social_edge_mask
+        if mask.numel() == 0:
+            mask = torch.ones_like(social_edge_index[0], dtype=torch.bool)
 
         return self.denoiser.get_embedding(
             social_edge_index=social_edge_index,
             behavioral_edge_index=behavioral_edge_index,
-            social_edge_mask=self.social_edge_mask
+            social_edge_mask=mask
         )
 
     def _train_model(
@@ -165,16 +166,7 @@ class GDMSR(TargetModel):
         for epoch in range(1, num_epochs + 1):
             self.train()
 
-            if epoch % self.curriculum_interval == 0:
-                self.eval()
-                confidence_scores, self.social_edge_mask = self.denoiser.denoise_social_graph(
-                    item_history=item_history,
-                    item_history_mask=item_history_mask,
-                    social_edge_index=social_edge_index,
-                    confidence_scores=confidence_scores,
-                    batch_size=val_batch_size
-                )
-                self.train()
+            train_dataset.social_edge_index = to_undirected(social_edge_index[:, self.social_edge_mask])
 
             total_loss = 0.0
             total_samples = 0
@@ -207,6 +199,17 @@ class GDMSR(TargetModel):
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
             self.eval()
+            # The release initializes confidence after epoch 0 and updates after D, 2D, ... .
+            if epoch == 1 or (epoch - 1) % self.curriculum_interval == 0:
+                confidence_scores, self.social_edge_mask = self.denoiser.denoise_social_graph(
+                    item_history=item_history,
+                    item_history_mask=item_history_mask,
+                    social_edge_index=social_edge_index,
+                    confidence_scores=confidence_scores,
+                    batch_size=val_batch_size,
+                    social_edge_mask=self.social_edge_mask,
+                    initialize=epoch == 1
+                )
             metric_results = compute_recommendation_metrics(
                 embeds=self.get_embedding(
                     social_edge_index=social_edge_index,

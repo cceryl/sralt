@@ -1,73 +1,77 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.utils import scatter
+from torch.utils.checkpoint import checkpoint
+from torch_geometric.utils import degree, scatter
 
 
 class DualContrastiveLearning(nn.Module):
-    """
-    Augmentation-free Dual Contrastive Learning module in EGCL.
-    """
+    """Full-node, sum-reduced InfoNCE with column-normalized neighbor views."""
 
-    def __init__(self, temperature: float, intra_reg: float, inter_reg: float):
-        """
-        :param temperature: Temperature parameter for InfoNCE loss.
-        :param intra_reg: Intra-view regularization coefficient.
-        :param inter_reg: Inter-view regularization coefficient.
-        """
+    def __init__(self, temperature: float, intra_reg: float, inter_reg: float, batch_size: int):
         super().__init__()
-
         self.temperature = temperature
         self.intra_reg = intra_reg
         self.inter_reg = inter_reg
+        self.batch_size = batch_size
+
+    def _info_nce_chunk(
+        self, anchors: torch.Tensor, candidates: torch.Tensor, labels: torch.Tensor
+    ) -> torch.Tensor:
+        logits = anchors @ candidates.t() / self.temperature
+        return F.cross_entropy(logits, labels, reduction='sum')
 
     def info_nce(self, view1: torch.Tensor, view2: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the InfoNCE loss between two views.
-        :param view1: Tensor of shape (batch_size, embed_dim) for the first view.
-        :param view2: Tensor of shape (batch_size, embed_dim) for the second view.
-        :return: Scalar tensor representing the InfoNCE loss.
-        """
-        view1 = F.normalize(view1, dim=1)
-        view2 = F.normalize(view2, dim=1)
+        """Chunk anchors only; every anchor still contrasts against every node."""
+        view1 = F.normalize(view1, dim=1, eps=1e-6)
+        view2 = F.normalize(view2, dim=1, eps=1e-6)
+        loss = view1.new_zeros(())
+        for start in range(0, view1.size(0), self.batch_size):
+            anchors = view1[start:start + self.batch_size]
+            labels = torch.arange(start, start + anchors.size(0), device=view1.device)
+            # Recompute logits in backward instead of retaining an N-by-N graph.
+            loss = loss + checkpoint(
+                self._info_nce_chunk, anchors, view2, labels, use_reentrant=False
+            )
+        return loss
 
-        logits = (view1 @ view2.t()) / self.temperature
-        labels = torch.arange(view1.size(0), device=view1.device)
-
-        return F.cross_entropy(logits, labels)
+    def neighbor_views(
+        self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor,
+        behavioral_embeds: torch.Tensor, social_embeds: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply R/column_degree and S/column_degree as in the release."""
+        num_users = social_embeds.size(0)
+        edges = behavioral_edge_index[:, behavioral_edge_index[0] < num_users]
+        users, items = edges
+        item_degree = degree(items, num_nodes=behavioral_embeds.size(0)).clamp(min=1)
+        weights = item_degree[items].reciprocal().unsqueeze(1)
+        user_neighbors = scatter(
+            behavioral_embeds[items] * weights, users, dim=0, dim_size=num_users, reduce='sum'
+        )
+        item_neighbors = scatter(
+            behavioral_embeds[users] * weights, items - num_users, dim=0,
+            dim_size=behavioral_embeds.size(0) - num_users, reduce='sum'
+        )
+        src, dst = social_edge_index
+        social_degree = degree(dst, num_nodes=num_users).clamp(min=1)
+        social_neighbors = scatter(
+            social_embeds[dst] / social_degree[dst, None], src,
+            dim=0, dim_size=num_users, reduce='sum'
+        )
+        return torch.cat([user_neighbors, item_neighbors]), social_neighbors
 
     def forward(
-        self,
-        social_edge_index: torch.Tensor,
-        behavioral_edge_index: torch.Tensor,
-        behavioral_embeds: torch.Tensor,
-        social_embeds: torch.Tensor,
-        users: torch.Tensor,
-        items: torch.Tensor
+        self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor,
+        behavioral_embeds: torch.Tensor, social_embeds: torch.Tensor
     ) -> torch.Tensor:
-        """
-        :param social_edge_index: Undirected edge index of shape (2, num_social_edges) for the user-user social graph.
-        :param behavioral_edge_index: Undirected edge index of shape (2, num_behavioral_edges) for the user-item behavioral graph.
-        :param behavioral_embeds: Behavioral embeddings of shape (num_users + num_items, embed_dim).
-        :param social_embeds: Social embeddings of shape (num_users, embed_dim).
-        :param users: Tensor of shape (num_users,) representing the user indices.
-        :param items: Tensor of shape (num_items,) representing the item indices.
-        :return: Scalar tensor representing the total loss.
-        """
         num_users = social_embeds.size(0)
-        num_items = behavioral_embeds.size(0) - num_users
-
-        src, tgt = social_edge_index
-        social_neighbor_embeds = scatter(social_embeds[src], tgt, dim_size=num_users, reduce='mean')
-
-        src, tgt = behavioral_edge_index
-        behavioral_neighbor_embeds = scatter(behavioral_embeds[src], tgt, dim_size=num_users+num_items, reduce='mean')
-
-        inter_loss = self.info_nce(social_embeds[users], behavioral_embeds[users])
+        behavioral_neighbors, social_neighbors = self.neighbor_views(
+            social_edge_index, behavioral_edge_index, behavioral_embeds, social_embeds
+        )
         intra_loss = (
-            self.info_nce(social_embeds[users], social_neighbor_embeds[users]) +
-            self.info_nce(behavioral_embeds[users], behavioral_neighbor_embeds[users]) +
-            self.info_nce(behavioral_embeds[items], behavioral_neighbor_embeds[items])
-        ) / 3.0
-
-        return self.inter_reg * inter_loss + self.intra_reg * intra_loss
+            self.info_nce(behavioral_embeds[:num_users], behavioral_neighbors[:num_users]) +
+            self.info_nce(social_embeds, social_neighbors) +
+            self.info_nce(behavioral_embeds[num_users:], behavioral_neighbors[num_users:])
+        )
+        inter_loss = self.info_nce(behavioral_embeds[:num_users], social_embeds)
+        return self.intra_reg * intra_loss + self.inter_reg * inter_loss

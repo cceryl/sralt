@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GCNConv
+import torch.nn.functional as F
+from torch_geometric.nn import LGConv
 from torch_geometric.utils import degree
-from torch_geometric.nn.models.lightgcn import BPRLoss
 
 
 class GCNLayer(nn.Module):
@@ -17,7 +17,28 @@ class GCNLayer(nn.Module):
         super().__init__()
 
         self.embed_dim = embed_dim
-        self.layer = GCNConv(in_channels=embed_dim, out_channels=embed_dim)
+        self.social = nn.Linear(embed_dim, embed_dim)
+        self.user_to_item = nn.Linear(embed_dim, embed_dim)
+        self.item_to_user = nn.Linear(embed_dim, embed_dim)
+        self.conv = LGConv(normalize=False)
+        for layer in (self.social, self.user_to_item, self.item_to_user):
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
+
+    def _propagate(
+        self, embeds: torch.Tensor, edge_index: torch.Tensor,
+        layer: nn.Linear, edge_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """DGL GraphConv's relation-specific out/in normalization, bias and ReLU."""
+        src, dst = edge_index
+        out_degree = degree(src, num_nodes=embeds.size(0)).clamp(min=1)
+        in_degree = degree(dst, num_nodes=embeds.size(0)).clamp(min=1)
+        weights = out_degree[src].rsqrt() * in_degree[dst].rsqrt()
+        if edge_mask is not None:
+            # Mask messages; degrees still refer to the original relation graph.
+            weights = weights * edge_mask
+        aggregated = self.conv(embeds, edge_index, weights)
+        return layer(aggregated).relu()
 
     def forward(
         self, *, embeds: torch.Tensor, num_users: int,
@@ -34,12 +55,14 @@ class GCNLayer(nn.Module):
         :param social_edge_mask: Optional mask for social edges of shape (num_social_edges,), where True indicates a valid edge.
         """
         user_embeds = embeds[:num_users]
-        social_edge_weight = social_edge_mask.float() if social_edge_mask is not None else None
-        social_out = self.layer(user_embeds, social_edge_index, edge_weight=social_edge_weight)
-        behavioral_out = self.layer(embeds, behavioral_edge_index)
+        social_out = self._propagate(user_embeds, social_edge_index, self.social, social_edge_mask)
+        user_edges = behavioral_edge_index[:, behavioral_edge_index[0] < num_users]
+        item_edges = behavioral_edge_index[:, behavioral_edge_index[0] >= num_users]
+        item_out = self._propagate(embeds, user_edges, self.user_to_item)
+        user_out = self._propagate(embeds, item_edges, self.item_to_user)
 
-        fused_user_embeds = (social_out + behavioral_out[:num_users]) * 0.5
-        fused_item_embeds = behavioral_out[num_users:]
+        fused_user_embeds = (social_out + user_out[:num_users]) * 0.5
+        fused_item_embeds = item_out[num_users:]
 
         return torch.cat([fused_user_embeds, fused_item_embeds], dim=0)
 
@@ -84,10 +107,13 @@ class Denoiser(nn.Module):
         self.embeds = nn.Embedding(num_users + num_items, embed_dim)
         self.sep_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.eos_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+        nn.init.normal_(self.embeds.weight, std=0.1)
+        nn.init.normal_(self.sep_token, std=0.1)
+        nn.init.normal_(self.eos_token, std=0.1)
 
         self.gcn = nn.ModuleList([GCNLayer(embed_dim) for _ in range(num_layers)])
         self.transformer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, dim_feedforward=embed_dim, nhead=1, batch_first=True
+            d_model=embed_dim, nhead=1, batch_first=True
         )
         self.scorer = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
@@ -96,7 +122,6 @@ class Denoiser(nn.Module):
             nn.Sigmoid()
         )
 
-        self.bpr_loss = BPRLoss(lambda_reg=decay)
         self.link_pred_loss = nn.BCELoss()
 
     def get_embedding(
@@ -105,14 +130,13 @@ class Denoiser(nn.Module):
         """
         Get the propagated embeddings after passing through GCN layers.
 
-        :param embeds: Initial embeddings for users and items of shape (num_users + num_items, embed_dim).
-        :param num_users: Total number of users.
         :param social_edge_index: Edge index for the social graph of shape (2, num_social_edges).
         :param behavioral_edge_index: Edge index for the user-item behavioral graph of shape (2, num_behavioral_edges).
         :param social_edge_mask: Mask for social edges of shape (num_social_edges,), where True indicates a valid edge.
-        :return: Propagated embeddings of shape (num_users + num_items, embed_dim).
+        :return: Embeddings of shape (num_users + num_items, (num_layers + 1) * embed_dim).
         """
         embeds = self.embeds.weight
+        all_embeds = [embeds]
 
         for layer in self.gcn:
             embeds = layer(
@@ -122,34 +146,9 @@ class Denoiser(nn.Module):
                 behavioral_edge_index=behavioral_edge_index,
                 social_edge_mask=social_edge_mask
             )
+            all_embeds.append(embeds)
 
-        return embeds
-
-    def _recommendation_forward(
-        self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor,
-        social_edge_mask: torch.Tensor, target_edge_index: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute the recommendation scores for the given target edges.
-
-        :param embeds: Initial embeddings for users and items of shape (num_users + num_items, embed_dim).
-        :param num_users: Total number of users.
-        :param social_edge_index: Edge index for the social graph of shape (2, num_social_edges).
-        :param behavioral_edge_index: Edge index for the user-item behavioral graph of shape (2, num_behavioral_edges).
-        :param social_edge_mask: Mask for social edges of shape (num_social_edges,), where True indicates a valid edge.
-        :param target_edge_index: Edge index for user-item pairs to compute recommendation scores, of shape (2, num_target_edges).
-        :return: Recommendation scores for the target edges of shape (num_target_edges,).
-        """
-        embeds = self.get_embedding(
-            social_edge_index=social_edge_index,
-            behavioral_edge_index=behavioral_edge_index,
-            social_edge_mask=social_edge_mask
-        )
-
-        src, dst = target_edge_index
-        scores = (embeds[src] * embeds[dst]).sum(dim=1)
-
-        return scores
+        return torch.cat(all_embeds, dim=1)
 
     def _relation_confidence_forward(
         self, item_history: torch.Tensor, item_history_mask: torch.Tensor, users: torch.Tensor
@@ -209,18 +208,13 @@ class Denoiser(nn.Module):
         :param neg_peers: Tensor of shape (batch_size,) containing negative peer user IDs corresponding to the users.
         :return: The final combined loss value for the batch.
         """
-        pos_rec_scores = self._recommendation_forward(
+        embeds = self.get_embedding(
             social_edge_index=social_edge_index,
             behavioral_edge_index=behavioral_edge_index,
-            social_edge_mask=social_edge_mask,
-            target_edge_index=torch.stack([users, pos_items], dim=0)
+            social_edge_mask=social_edge_mask
         )
-        neg_rec_scores = self._recommendation_forward(
-            social_edge_index=social_edge_index,
-            behavioral_edge_index=behavioral_edge_index,
-            social_edge_mask=social_edge_mask,
-            target_edge_index=torch.stack([users, neg_items], dim=0)
-        )
+        pos_rec_scores = (embeds[users] * embeds[pos_items]).sum(dim=1)
+        neg_rec_scores = (embeds[users] * embeds[neg_items]).sum(dim=1)
         pos_relation_scores = self._relation_confidence_forward(
             item_history=item_history,
             item_history_mask=item_history_mask,
@@ -237,10 +231,10 @@ class Denoiser(nn.Module):
             torch.ones_like(pos_relation_scores), torch.zeros_like(neg_relation_scores)], dim=0
         )
 
-        node_ids = torch.cat([users, pos_items, neg_items])
-        recommendation_loss = self.bpr_loss(pos_rec_scores, neg_rec_scores, self.embeds(node_ids))
+        recommendation_loss = F.softplus(neg_rec_scores - pos_rec_scores).mean()
+        regularization = (embeds[users].square().sum() + embeds[pos_items].square().sum()) / users.size(0)
         relation_loss = self.link_pred_loss(relation_scores, relation_labels.float())
-        loss = self.alpha * relation_loss + (1.0 - self.alpha) * recommendation_loss
+        loss = self.alpha * relation_loss + (1.0 - self.alpha) * recommendation_loss + self.decay * regularization
 
         return loss
 
@@ -249,7 +243,8 @@ class Denoiser(nn.Module):
         self,
         item_history: torch.Tensor, item_history_mask: torch.Tensor,
         social_edge_index: torch.Tensor, confidence_scores: torch.Tensor,
-        batch_size: int
+        batch_size: int, social_edge_mask: torch.Tensor | None = None,
+        initialize: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate a mask for social edges based on the confidence scores. Note that the mask may not be undirected.
@@ -259,6 +254,8 @@ class Denoiser(nn.Module):
         :param social_edge_index: Undirected edge index for the social graph of shape (2, num_social_edges).
         :param confidence_scores: Tensor of shape (num_social_edges,) containing previous confidence scores, for EMA update.
         :param batch_size: Batch size for processing users in the social graph.
+        :param social_edge_mask: Previous mask; removed edges remain removed.
+        :param initialize: Initialize confidence without smoothing or removing edges.
         :return: New confidence scores and mask for social edges, both of shape (num_social_edges,).
         """
         device = social_edge_index.device
@@ -274,19 +271,25 @@ class Denoiser(nn.Module):
             )
             new_confidence_scores[start:end] = batch_confidence_scores
 
-        smoothed_scores = self.beta * confidence_scores + (1.0 - self.beta) * new_confidence_scores
+        smoothed_scores = new_confidence_scores if initialize else (
+            self.beta * confidence_scores + (1.0 - self.beta) * new_confidence_scores
+        )
         degrees = degree(social_edge_index[0], num_nodes=self.num_users)
-        mask = torch.ones(social_edge_index.size(1), dtype=torch.bool, device=device)
+        mask = (torch.ones(social_edge_index.size(1), dtype=torch.bool, device=device)
+                if social_edge_mask is None else social_edge_mask.clone())
+        if initialize:
+            return smoothed_scores, mask
 
-        for u in range(self.num_users):
-            if degrees[u] <= self.epsilon:
-                continue
-
-            drop_num = ((degrees[u].log2().floor() ** self.gamma) * self.r).clamp(min=0, max=degrees[u].item())
-            edge_indices = (social_edge_index[0] == u).nonzero(as_tuple=True)[0]
-
-            _, indices = torch.topk(smoothed_scores[edge_indices], k=int(drop_num), largest=False)
-            mask[edge_indices[indices]] = False
+        drop_counts = (degrees.clamp(min=1).log2().floor().pow(self.gamma) * self.r).long()
+        drop_counts = torch.minimum(drop_counts.clamp(min=0), degrees.long())
+        drop_counts[degrees < self.epsilon] = 0
+        # Group by source while keeping ascending confidence within each group.
+        order = smoothed_scores.argsort(stable=True)
+        order = order[social_edge_index[0, order].argsort(stable=True)]
+        sources = social_edge_index[0, order]
+        starts = degrees.long().cumsum(0) - degrees.long()
+        ranks = torch.arange(order.numel(), device=device) - starts[sources]
+        mask[order[ranks < drop_counts[sources]]] = False
 
         return smoothed_scores, mask
 
