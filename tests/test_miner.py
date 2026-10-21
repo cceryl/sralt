@@ -169,7 +169,7 @@ class MINERTests(unittest.TestCase):
             torch.testing.assert_close(actual, expected)
 
     def test_config_factories_and_dataset_specific_learning_rates(self):
-        for dataset, learning_rate in [('ciao', 0.01), ('flickr', 0.05), ('yelp', 0.05)]:
+        for dataset, learning_rate in [('ciao', 0.01), ('epinions', 0.05), ('flickr', 0.05), ('yelp', 0.05)]:
             for mode in ['miner', 'enminer']:
                 with self.subTest(dataset=dataset, mode=mode):
                     config = compose_config(dataset, mode)
@@ -194,7 +194,7 @@ class MINERTests(unittest.TestCase):
         self.assertEqual(params['shadow/model'], 'miner')
         self.assertEqual(params['attack/model'], 'miner,enminer')
         self.assertEqual(len(params['target/data'].split(',')) * len(params['target/model'].split(',')) *
-                         len(params['attack/model'].split(',')) * len(params['seed'].split(',')), 90)
+                         len(params['attack/model'].split(',')) * len(params['seed'].split(',')), 120)
 
     def test_three_stages_cache_round_trip_and_strict_checkpoint_restore(self):
         config = compose_config()

@@ -2,7 +2,7 @@
 hydra:
   sweeper:
     params:
-      target/data: ciao,flickr,yelp
+      target/data: ciao,epinions,flickr,yelp
       target/model: design,gdmsr,egcl
       shadow/model: smia,csa
       attack/model: mlp

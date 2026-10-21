@@ -11,6 +11,8 @@ attribute:
 # Dataset-specific learning rates from SMIA's mia_attack.py.
 learning_rates:
   Ciao: 0.01
+  # Initial extension setting; not an author-reported Epinions optimum.
+  Epinions: 0.05
   Flickr: 0.05
   Yelp: 0.05
 

@@ -28,7 +28,7 @@ import copy
 import argparse
 
 # Edit these defaults, then run without arguments. CLI options override each field.
-DATASETS = ["ciao", "flickr", "yelp"]
+DATASETS = ["ciao", "epinions", "flickr", "yelp"]
 TARGET_MODELS = ["design", "gdmsr", "egcl", "lightgcn"]
 MODEL_PAIRS = [("smia", "mlp"), ("csa", "mlp"), ("miner", "miner"), ("miner", "enminer")]
 SEEDS = [42, 43, 44, 45, 46]

@@ -2,7 +2,7 @@
 
 SRALT is a social-relation level membership inference attack framework targeting long-tail users in social recommender systems. It evaluates privacy leakage under strict black-box settings and is built around three stages: a target stage for training and evaluating the victim recommender, a shadow stage for learning attack-oriented user representations, and an attack stage for predicting whether a social link exists between two users.
 
-The codebase supports Ciao, Flickr, and Yelp datasets. The social target recommenders are DESIGN, GDMSR, and EGCL; LightGCN is available as a general (non-social) recommender baseline. The shadow models are SMIA, CSA, and DSA, and the final attack model is MLP. CSA, our proposed model, leverages residual vector quantization and semantic edge augmentation to learn high-quality representations for long-tail users. DSA, which removes the residual vector quantization module, serves as an ablation variant of CSA. SMIA serves as the baseline and employs two simple graph neural networks to learn user representations. The attack model is an MLP classifier that takes the representations of two users as input and predicts whether a social link exists between them.
+The codebase supports Ciao, Epinions, Flickr, and Yelp datasets. The social target recommenders are DESIGN, GDMSR, and EGCL; LightGCN is available as a general (non-social) recommender baseline. The shadow models are SMIA, CSA, and DSA, and the final attack model is MLP. CSA, our proposed model, leverages residual vector quantization and semantic edge augmentation to learn high-quality representations for long-tail users. DSA, which removes the residual vector quantization module, serves as an ablation variant of CSA. SMIA serves as the baseline and employs two simple graph neural networks to learn user representations. The attack model is an MLP classifier that takes the representations of two users as input and predicts whether a social link exists between them.
 
 MINER and En_MINER are also available as social-relation attack baselines, following the [SMIA authors' implementation](https://github.com/XuHao-bit/SMIA/tree/a7e79411244a574ba0b539510f105094a8956682). They use a dedicated shadow adapter and classify distance features between recommended item embeddings and another user's embedding.
 
@@ -72,10 +72,10 @@ All modifiable parameters are listed in the configuration files under `sralt/con
 python ./scripts/pipeline.py target/data=ciao target/model=design shadow/model=csa attack/model=mlp shadow.model.attribute.num_quantizers=16
 ```
 
-For a multirun sweep, add `-m` and override the values you want to explore. The following command sweeps over 3 datasets, 3 target models, 2 shadow models, and 5 random seeds, producing 90 sequential runs in total:
+For a multirun sweep, add `-m` and override the values you want to explore. The following command sweeps over 4 datasets, 3 target models, 2 shadow models, and 5 random seeds, producing 120 sequential runs in total:
 
 ```bash
-python ./scripts/pipeline.py -m target/data=ciao,flickr,yelp target/model=design,gdmsr,egcl shadow/model=smia,csa attack/model=mlp seed=42,43,44,45,46
+python ./scripts/pipeline.py -m target/data=ciao,epinions,flickr,yelp target/model=design,gdmsr,egcl shadow/model=smia,csa attack/model=mlp seed=42,43,44,45,46
 ```
 
 Preset experiment configurations are stored in `sralt/configs/experiment`. They cover comparison, ablation, hyperparameter, and attacker-knowledge settings. For example, the following command runs the comparison experiment, which is equivalent to the previous multirun command:
@@ -83,6 +83,20 @@ Preset experiment configurations are stored in `sralt/configs/experiment`. They 
 ```bash
 python ./scripts/pipeline.py -m experiment=comparison
 ```
+
+## Epinions Data
+
+Select `target/data=epinions` in either pipeline, for example:
+
+```bash
+python scripts/pipeline_low_memory.py target/data=epinions target/model=design shadow/model=csa attack/model=mlp
+```
+
+The loader reads `data/epinions/rating.mat` (`rating`: user, item, category, rating) and `trustnetwork.mat` (`trustnetwork`: source user, destination user). Epinions and Ciao share MATLAB preprocessing: ratings >= 2, deduplication, undirected social edges, iterative filtering (at least 5 interactions and 1 social connection per user, 1 interaction per item), contiguous global IDs, and seeded random leave-one-out. Raw social self-links are retained, matching existing preprocessing.
+
+The supplied Epinions files contain 922,267 rating rows and 355,754 trust rows. Default preprocessing retains 18,061 users, 253,571 items, 713,231 interactions, and 571,306 directed social entries (including 224 self-links). Train/validation/test interactions number 677,109 / 18,061 / 18,061. Seed 42 preprocessing and cache reload were verified on CPU; full training and parameter tuning remain pending. MINER/En_MINER use an initial Epinions learning rate of 0.05, not an author-reported optimum.
+
+Both comparison sweeps and the comparison report include Epinions by default. Other ablation and parameter presets retain their Ciao default; override `target/data=epinions` to use the new dataset.
 
 ## Social MINER Baselines
 
@@ -97,7 +111,7 @@ MINER uses four distances (L1, L2, cosine, Bray-Curtis) from one user's K recomm
 
 These reproduce the social baselines released with SMIA, which omit the original interaction-level MINER's knowledge graph, bilateral attack network, and cumulative learning. See [the reproduction notes](docs/archive/miner-reproduction.md) for sources and implementation differences.
 
-The dedicated sweep covers both attack modes, three datasets, three social target models, and five seeds (90 sequential runs):
+The dedicated sweep covers both attack modes, four datasets, three social target models, and five seeds (120 sequential runs):
 
 ```bash
 python ./scripts/pipeline.py -m experiment=miner
