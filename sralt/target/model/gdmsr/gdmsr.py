@@ -37,7 +37,8 @@ class GDMSR(TargetModel):
         gamma: float,
         epsilon: int,
         r: float,
-        decay: float
+        decay: float,
+        dim_feedforward: int = 2048
     ):
         """
         Initialize the GDMSR model.
@@ -54,6 +55,7 @@ class GDMSR(TargetModel):
         :param epsilon: Threshold for user degree in adaptive denoising ratio calculation.
         :param r: Scale factor in adaptive denoising ratio calculation.
         :param decay: Decay weight in BPR loss.
+        :param dim_feedforward: Hidden dimension of the relation Transformer's FFN.
         """
         super().__init__(num_users, num_items)
 
@@ -67,6 +69,7 @@ class GDMSR(TargetModel):
         self.epsilon = epsilon
         self.r = r
         self.decay = decay
+        self.dim_feedforward = dim_feedforward
 
         self.denoiser = Denoiser(
             num_users=num_users,
@@ -78,7 +81,8 @@ class GDMSR(TargetModel):
             gamma=gamma,
             epsilon=epsilon,
             r=r,
-            decay=decay
+            decay=decay,
+            dim_feedforward=dim_feedforward
         )
 
         self.social_edge_mask: torch.Tensor
@@ -347,6 +351,7 @@ class GDMSR(TargetModel):
             f'num_items={self.num_items}, '
             f'embed_dim={self.embed_dim}, '
             f'num_layers={self.num_layers}, '
+            f'dim_feedforward={self.dim_feedforward}, '
             f'sequence_length={self.sequence_length}, '
             f'curriculum_interval={self.curriculum_interval}, '
             f'alpha={self.alpha}, '

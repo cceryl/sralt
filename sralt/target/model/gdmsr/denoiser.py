@@ -77,7 +77,8 @@ class Denoiser(nn.Module):
 
     def __init__(
         self, num_users: int, num_items: int, embed_dim: int, num_layers: int,
-        alpha: float, beta: float, gamma: float, epsilon: int, r: float, decay: float
+        alpha: float, beta: float, gamma: float, epsilon: int, r: float, decay: float,
+        dim_feedforward: int = 2048
     ):
         """
         :param num_users: Total number of users.
@@ -90,6 +91,7 @@ class Denoiser(nn.Module):
         :param epsilon: Threshold for user degree in adaptive denoising ratio calculation.
         :param r: Scale factor in adaptive denoising ratio calculation.
         :param decay: Decay weight in BPR loss.
+        :param dim_feedforward: Hidden dimension of the relation Transformer's FFN.
         """
         super().__init__()
 
@@ -113,7 +115,7 @@ class Denoiser(nn.Module):
 
         self.gcn = nn.ModuleList([GCNLayer(embed_dim) for _ in range(num_layers)])
         self.transformer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, nhead=1, batch_first=True
+            d_model=embed_dim, nhead=1, dim_feedforward=dim_feedforward, batch_first=True
         )
         self.scorer = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
@@ -150,6 +152,23 @@ class Denoiser(nn.Module):
 
         return torch.cat(all_embeds, dim=1)
 
+    def _encode_eos(self, sequence: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
+        """Read only EOS from the single, post-norm Transformer layer.
+
+        All tokens (including EOS) remain keys/values. Other query outputs cannot
+        affect EOS: the remaining LayerNorm and FFN operations act per token.
+        Parameter names/shapes stay identical to the full-sequence layer.
+        """
+        layer = self.transformer
+        eos = sequence[:, -1:, :]
+        attended, _ = layer.self_attn(
+            query=eos, key=sequence, value=sequence,
+            key_padding_mask=padding_mask, need_weights=False
+        )
+        eos = layer.norm1(eos + layer.dropout1(attended))
+        hidden = layer.linear2(layer.dropout(layer.activation(layer.linear1(eos))))
+        return layer.norm2(eos + layer.dropout2(hidden)).squeeze(1)
+
     def _relation_confidence_forward(
         self, item_history: torch.Tensor, item_history_mask: torch.Tensor, users: torch.Tensor
     ) -> torch.Tensor:
@@ -178,11 +197,7 @@ class Denoiser(nn.Module):
             dim=1
         )
 
-        encoded_sequence = self.transformer(
-            src=combined_sequence,
-            src_key_padding_mask=combined_mask
-        )
-        eos_summary = encoded_sequence[:, -1, :]
+        eos_summary = self._encode_eos(combined_sequence, combined_mask)
         confidence_scores: torch.Tensor = self.scorer(eos_summary)
 
         return confidence_scores.squeeze(-1)
@@ -300,6 +315,7 @@ class Denoiser(nn.Module):
             f'num_items={self.num_items}, '
             f'embed_dim={self.embed_dim}, '
             f'num_layers={self.num_layers}, '
+            f'dim_feedforward={self.transformer.linear1.out_features}, '
             f'alpha={self.alpha}, '
             f'beta={self.beta}, '
             f'gamma={self.gamma}, '

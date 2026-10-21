@@ -49,6 +49,15 @@ The pipeline is configured with Hydra. For a single run, you must at least speci
 python ./scripts/pipeline.py target/data=ciao target/model=design shadow/model=csa attack/model=mlp
 ```
 
+To release each model after its last use and skip extra data/model checkpoints in
+`runs`, use `scripts/pipeline_low_memory.py` with the same arguments (including
+`-m` and experiment presets). It retains the existing `.cache` behavior, evaluation,
+logs, Hydra configuration and TensorBoard output:
+
+```bash
+python ./scripts/pipeline_low_memory.py target/data=ciao target/model=design shadow/model=csa attack/model=mlp
+```
+
 To use the non-social LightGCN target, select `target/model=lightgcn`:
 
 ```bash

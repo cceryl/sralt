@@ -1,9 +1,10 @@
 name: GDMSR
-revision: author-aligned-v1
+revision: author-aligned-eos-v2
 
 attribute:
   _target_: sralt.target.model.gdmsr.GDMSR
   embed_dim: 64
+  dim_feedforward: 2048
   num_layers: 2
   sequence_length: 30
   curriculum_interval: 10
