@@ -6,7 +6,9 @@ The codebase supports Ciao, Flickr, and Yelp datasets. The social target recomme
 
 MINER and En_MINER are also available as social-relation attack baselines, following the [SMIA authors' implementation](https://github.com/XuHao-bit/SMIA/tree/a7e79411244a574ba0b539510f105094a8956682). They use a dedicated shadow adapter and classify distance features between recommended item embeddings and another user's embedding.
 
-SMIA now follows the authors' row-normalized propagation, regularization and raw-table attack features. The shared MLP uses unweighted BCE and clipped SGD without BatchNorm. Public social positives are split before shadow training; every shadow model receives only the attack training positives. Recommendation holdout, training budgets, validation selection and reporting retain SRALT's protocol. See the [alignment notes](docs/archive/smia-author-alignment.md) and the separate [DESIGN original-code review](docs/archive/design-reproduction.md).
+SMIA now follows the authors' row-normalized propagation, regularization and raw-table attack features. The shared MLP uses unweighted BCE and clipped SGD without BatchNorm. Public social positives are split before shadow training; every shadow model receives only the attack training positives. Recommendation holdout, training budgets, validation selection and reporting retain SRALT's protocol. See the [alignment notes](docs/archive/smia-author-alignment.md).
+
+DESIGN follows its original supplementary implementation in PyTorch, including batch edge removal, degree-dependent self weights, independent social/interaction chains, pointwise BCE and mutual distillation. It retains SRALT's shared data, training and evaluation protocol. Its `author-aligned-v1` configuration separates new model caches from the earlier implementation; see the [DESIGN migration notes](docs/archive/design-reproduction.md).
 
 ## Project Structure
 

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .layers import SocialConv, RatingConv
+from .layers import SocialConv, RatingConv, MeanPropagation
 
 
 class TwinGCN(nn.Module):
@@ -25,47 +25,43 @@ class TwinGCN(nn.Module):
         self.item_fusion_layers = item_fusion_layers
 
         self.embeds = nn.Embedding(num_users + num_items, embed_dim)
+        nn.init.normal_(self.embeds.weight, std=0.01)
         self.social = SocialConv()
         self.rating = RatingConv()
 
-    def get_embedding(self, social_edge_index: torch.Tensor, rating_edge_index: torch.Tensor) -> torch.Tensor:
+    def get_embedding(self, social_graph: MeanPropagation, rating_graph: MeanPropagation) -> torch.Tensor:
         """
         Get user and item embeddings after social and rating convolutions.
 
-        :param social_edge_index: Edge index tensor of shape (2, num_social_edges) representing social connections.
-        :param rating_edge_index: Undirected edge index tensor of shape (2, num_rating_edges) representing behavioral interactions.
+        :param social_graph: Prepared friend-neighbor mean propagation.
+        :param rating_graph: Prepared interaction propagation, shared with RatingGCN.
         :return: Embedding tensor of shape (num_nodes, embed_dim).
         """
-        embeds = self.embeds.weight
-        all_embeds = [embeds]
+        social_users = self.embeds.weight[:self.num_users]
+        rating_embeds = self.embeds.weight
+        all_user_embeds = [social_users]
+        for _ in range(max(self.user_fusion_layers)):
+            social_users = self.social(social_graph, social_users)
+            rating_embeds = self.rating(rating_graph, rating_embeds)
+            all_user_embeds.append(0.5 * social_users + 0.5 * rating_embeds[:self.num_users])
 
-        for _ in range(max(self.user_fusion_layers + self.item_fusion_layers)):
-            social_user_embeds = self.social(social_edge_index, embeds[:self.num_users])
-            social_item_embeds = embeds[self.num_users:]
-            social_embeds = torch.cat([social_user_embeds, social_item_embeds], dim=0)
-            rating_embeds = self.rating(rating_edge_index, embeds)
-
-            embeds = 0.5 * social_embeds + 0.5 * rating_embeds
-            all_embeds.append(embeds)
-
-        all_user_embeds = [all_embeds[i][:self.num_users] for i in self.user_fusion_layers]
-        all_item_embeds = [all_embeds[i][self.num_users:] for i in self.item_fusion_layers]
-        user_embeds = torch.stack(all_user_embeds).mean(dim=0)
-        item_embeds = torch.stack(all_item_embeds).mean(dim=0)
+        all_user_embeds = [all_user_embeds[i] for i in self.user_fusion_layers]
+        user_embeds = torch.stack(all_user_embeds).sum(dim=0)
+        item_embeds = self.embeds.weight[self.num_users:]
         final_embeds = torch.cat([user_embeds, item_embeds], dim=0)
 
         return final_embeds
 
-    def forward(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor, target_edge_index: torch.Tensor) -> torch.Tensor:
+    def forward(self, social_graph: MeanPropagation, rating_graph: MeanPropagation, target_edge_index: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the TwinGCN model.
 
-        :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
-        :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
+        :param social_graph: Prepared friend-neighbor mean propagation.
+        :param rating_graph: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
         :param target_edge_index: Edge index tensor of shape (2, num_target_edges) for which to compute scores.
         :return: Score tensor of shape (num_target_edges,).
         """
-        embeds = self.get_embedding(social_edge_index, behavioral_edge_index)
+        embeds = self.get_embedding(social_graph, rating_graph)
 
         src, dst = target_edge_index
         scores = (embeds[src] * embeds[dst]).sum(dim=1)

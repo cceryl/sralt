@@ -1,5 +1,6 @@
 import typing
 import logging
+from typing import Callable
 from tqdm import tqdm
 
 import torch
@@ -15,6 +16,7 @@ from torch_geometric.metrics.link_pred import LinkPredMetric
 from .twin import TwinGCN
 from .social import SocialGCN
 from .rating import RatingGCN
+from .layers import MeanGraph, MeanPropagation
 from sralt.target.model import TargetModel
 from sralt.target.data import TargetData, TrainTargetDataset, EvalTargetDataset
 from sralt.utils import timer, model_fingerprint, compute_recommendation_metrics, recommend_items
@@ -30,7 +32,7 @@ class DESIGN(TargetModel):
     def __init__(
         self, num_users: int, num_items: int, embed_dim: int,
         user_fusion_layers: list[int], item_fusion_layers: list[int],
-        decay: float, distill_weight: float
+        distill_weight: float
     ):
         """
         :param num_users: Total number of users.
@@ -38,7 +40,6 @@ class DESIGN(TargetModel):
         :param embed_dim: Dimension of the embeddings.
         :param user_fusion_layers: Indices of layers to sum when computing the final embedding for users.
         :param item_fusion_layers: Indices of layers to sum when computing the final embedding for items.
-        :param decay: L2 regularization coefficient.
         :param distill_weight: Weight for the distillation loss.
         """
         super().__init__(num_users, num_items)
@@ -47,22 +48,39 @@ class DESIGN(TargetModel):
         self.rating = RatingGCN(num_users, num_items, embed_dim, user_fusion_layers, item_fusion_layers)
         self.twin = TwinGCN(num_users, num_items, embed_dim, user_fusion_layers, item_fusion_layers)
 
-        self.decay = decay
         self.distill_weight = distill_weight
+        self._graphs: dict[str, MeanGraph] = {}
+
+    def _apply(self, fn: Callable, recurse: bool = True):
+        self._graphs.clear()
+        return super()._apply(fn, recurse=recurse)
+
+    def _prepare_graphs(
+        self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor,
+        excluded_edges: torch.Tensor | None = None
+    ) -> tuple[MeanPropagation, MeanPropagation]:
+        for key, edges, count in (
+            ('social', social_edge_index, self.num_users),
+            ('rating', behavioral_edge_index, self.num_users + self.num_items)
+        ):
+            if key not in self._graphs or self._graphs[key].source_edge_index is not edges:
+                self._graphs[key] = MeanGraph(edges, count, self.twin.embeds.weight.dtype)
+        return self._graphs['social'].propagation(), self._graphs['rating'].propagation(excluded_edges)
 
     def forward(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor, target_edge_index: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the DESIGN model.
+        """Return three branch logits [samples, 3].
 
-        :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social connections.
-        :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
-        :param target_edge_index: Edge index tensor of shape (2, num_target_edges) for which to compute scores.
-        :return: Stack of score tensors from SocialGCN, RatingGCN, and TwinGCN of shape (num_target_edges, 3).
+        In training, remove every queried pair that exists in the training graph,
+        in both directions, before computing any branch. One graph serves all
+        positive and negative scores in the batch.
         """
-        social_scores: torch.Tensor = self.social(social_edge_index, target_edge_index)
-        rating_scores: torch.Tensor = self.rating(behavioral_edge_index, target_edge_index)
-        twin_scores: torch.Tensor = self.twin(social_edge_index, behavioral_edge_index, target_edge_index)
-
+        social_graph, rating_graph = self._prepare_graphs(
+            social_edge_index, behavioral_edge_index,
+            target_edge_index if self.training else None
+        )
+        social_scores = self.social(social_graph, target_edge_index)
+        rating_scores = self.rating(rating_graph, target_edge_index)
+        twin_scores = self.twin(social_graph, rating_graph, target_edge_index)
         return torch.stack([social_scores, rating_scores, twin_scores], dim=1)
 
     def get_embedding(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> torch.Tensor:
@@ -73,51 +91,23 @@ class DESIGN(TargetModel):
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
         :return: Embedding tensor of shape (num_nodes, embed_dim).
         """
-        return self.twin.get_embedding(social_edge_index, behavioral_edge_index)
+        social_graph, rating_graph = self._prepare_graphs(social_edge_index, behavioral_edge_index)
+        return self.twin.get_embedding(social_graph, rating_graph)
 
-    def calculate_loss(self, pos_scores: torch.Tensor, neg_scores: torch.Tensor, nodes: torch.Tensor) -> torch.Tensor:
+    def calculate_loss(self, scores: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Sum pointwise BCE over branches and six teacher-detached directions.
+
+        Each term averages all batch examples, as in the original trainer. Using
+        logits avoids log(0) while preserving the authors' BCE objective.
         """
-        Compute loss using Bayesian Personalized Ranking (BPR) loss, L2 regularization, and distillation loss.
-        Note that pos_scores[i] and neg_scores[i] correspond to the same user.
-
-        :param pos_scores: Score tensor of shape (num_samples, 3).
-        :param neg_scores: Score tensor of shape (num_samples, 3).
-        :param nodes: Node indices tensor of shape (3 * num_samples,).
-        :return: Computed loss tensor.
-        """
-        sigmoid = nn.Sigmoid()
-        logsigmoid = nn.LogSigmoid()
-
-        loss = torch.tensor(0.0, device=nodes.device)
-        batch_size = pos_scores.size(0)
-
-        # BPR loss
-        diff_scores = pos_scores - neg_scores
-        rank_loss = -typing.cast(torch.Tensor, logsigmoid(diff_scores)).mean()
-        loss += rank_loss
-
-        # L2 regularization
-        if self.decay != 0.0:
-            reg_loss = (
-                self.social.embeds.weight[nodes].pow(2).sum() +
-                self.rating.embeds.weight[nodes].pow(2).sum() +
-                self.twin.embeds.weight[nodes].pow(2).sum()
-            ) / batch_size
-
-            loss += self.decay * reg_loss
-
-        # Distillation loss
-        if self.distill_weight != 0.0:
-            pos_probs: torch.Tensor = sigmoid(pos_scores)
-            neg_probs: torch.Tensor = sigmoid(neg_scores)
-            distill_loss = torch.tensor(0.0, device=nodes.device)
-
-            for teacher, student in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]:
-                distill_loss += F.binary_cross_entropy(pos_probs[:, student], pos_probs[:, teacher].detach())
-                distill_loss += F.binary_cross_entropy(neg_probs[:, student], neg_probs[:, teacher].detach())
-
-            loss += self.distill_weight * distill_loss / 6.0
-
+        targets = labels.to(scores.dtype)[:, None].expand_as(scores)
+        loss = F.binary_cross_entropy_with_logits(scores, targets, reduction='none').mean(dim=0).sum()
+        if self.distill_weight != 0:
+            probabilities = scores.sigmoid()
+            for teacher, student in ((0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)):
+                loss = loss + self.distill_weight * F.binary_cross_entropy_with_logits(
+                    scores[:, student], probabilities[:, teacher].detach()
+                )
         return loss
 
     def _train_model(
@@ -163,12 +153,10 @@ class DESIGN(TargetModel):
 
                 pos_edges = torch.stack([users, pos_items], dim=0)
                 neg_edges = torch.stack([users, neg_items], dim=0)
-                node_ids = torch.cat([users, pos_items, neg_items])
-
-                pos_scores: torch.Tensor = self(data.social_edge_index, undirected_behavioral_edge_index, pos_edges)
-                neg_scores: torch.Tensor = self(data.social_edge_index, undirected_behavioral_edge_index, neg_edges)
-
-                loss = self.calculate_loss(pos_scores, neg_scores, node_ids)
+                batch_edges = torch.cat([pos_edges, neg_edges], dim=1)
+                labels = torch.cat([torch.ones_like(users), torch.zeros_like(users)])
+                scores = self(data.social_edge_index, undirected_behavioral_edge_index, batch_edges)
+                loss = self.calculate_loss(scores, labels)
                 loss.backward()
                 optimizer.step()
 
@@ -294,7 +282,6 @@ class DESIGN(TargetModel):
             f'embed_dim={self.twin.embeds.embedding_dim}, '
             f'user_fusion_layers={self.twin.user_fusion_layers}, '
             f'item_fusion_layers={self.twin.item_fusion_layers}, '
-            f'decay={self.decay}, '
             f'distill_weight={self.distill_weight}, '
             f'fingerprint={model_fingerprint(self)})'
         )

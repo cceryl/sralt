@@ -1,12 +1,12 @@
 name: DESIGN
+revision: author-aligned-v1
 
 attribute:
   _target_: sralt.target.model.design.DESIGN
   embed_dim: 64
-  user_fusion_layers: [0, 1, 2]
-  item_fusion_layers: [0, 1, 2]
-  decay: 5e-3
-  distill_weight: 1e-2
+  user_fusion_layers: [1, 2]
+  item_fusion_layers: [0]
+  distill_weight: 1.0
 
 train:
   train_batch_size: 32768
