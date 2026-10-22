@@ -26,7 +26,7 @@ class ComparisonReportTests(unittest.TestCase):
 
     def args(self, *extra):
         return report.parse_args(["--datasets", "ciao", "--targets", "lightgcn", "--pairs", "miner:miner",
-                                  "--seeds", "42", *extra])
+                                  "--seeds", "42", "--no-target-metrics", "--no-shadow-metrics", *extra])
 
     def test_default_targets_include_lightgcn_and_cli_can_override(self):
         self.assertEqual(report.parse_args([]).targets, ["design", "gdmsr", "egcl", "lightgcn"])
@@ -157,15 +157,15 @@ document.getElementById('report-data').textContent=PAYLOAD;
 '''.replace("PAYLOAD", json.dumps(json.dumps(payload)))
         assertions = r'''
 assert.equal(currentTable.rows.length,1);
-assert.equal(currentTable.rows[0][4],'2/3');
-assert.match(currentTable.rows[0][5],/0.7000 ± 0.1414 \(n=2\)/);
+assert.equal(currentTable.rows[0][5],'2/3');
+assert.match(currentTable.rows[0][6],/0.7000 ± 0.1414 \(n=2\)/);
 assert.equal(stats([null,undefined,NaN]).n,0);
 assert.match($('charts').children.at(-1).innerHTML,/<svg/);
 $('hide-empty').checked=true;render();
 assert.equal(currentTable.rows.length,1);
-assert.equal(currentTable.rows[0][4],'2/3');
+assert.equal(currentTable.rows[0][5],'2/3');
 choices.seed.delete('43');render();
-assert.match(currentTable.rows[0][5],/0.6000 \(n=1\)/);
+assert.match(currentTable.rows[0][6],/0.6000 \(n=1\)/);
 $('aggregate').checked=false;render();assert.equal(currentTable.rows.length,1);
 $('hide-empty').checked=false;render();assert.equal(currentTable.rows.length,2);
 choices.dataset.clear();render();assert.equal(currentTable.rows.length,0);
@@ -177,12 +177,12 @@ const absent=structuredClone(report.rows[0]);absent.shadow='miner';absent.attack
 report.rows.push(absent);choices.shadow.add('miner');choices.attack.add('enminer');
 $('aggregate').checked=true;$('hide-empty').checked=false;render();assert.equal(currentTable.rows.length,2);
 $('hide-empty').checked=true;render();assert.equal(currentTable.rows.length,1);
-assert.equal(currentTable.rows[0][4],'2/3');
+assert.equal(currentTable.rows[0][5],'2/3');
 $('csv').onclick();assert.doesNotMatch(exported.content,/enminer/);
 $('json').onclick();assert.equal(JSON.parse(exported.content).rows.length,4);
 
 // A baseline compares the displayed means, independently within each facet.
-function fixture(dataset,target,shadow,seed,auroc){return {dataset,target,shadow,attack:'mlp',seed,
+function fixture(dataset,target,shadow,seed,auroc){return {dataset,target,defense:'None',shadow,attack:'mlp',seed,
   status:{attack:'cached'},results:{attack:auroc===null?null:Object.fromEntries(['all','head','tail'].map(group=>
     [group,{AUROC:auroc,F1Score:shadow==='smia'?0:0.5,'TPR@FPR=1%':0.1}]))}};}
 report.rows=[fixture('ciao','design','smia',42,0.4),fixture('ciao','design','smia',43,0.6),
@@ -209,13 +209,13 @@ for(const [dataset,target] of [['flickr','design'],['ciao','lightgcn']]){
 const noBaseline=aggregate(selectedRows()).find(row=>row.target==='egcl');
 assert.equal(relativeChange(noBaseline,'all','AUROC').value,null);
 assert.match(relativeChange(noBaseline,'all','AUROC').reason,/没有 baseline 指标记录/);
-const csvRow=currentTable.rows.find(row=>row[0]==='ciao'&&row[1]==='design'&&row[2]==='csa');
+const csvRow=currentTable.rows.find(row=>row[0]==='ciao'&&row[1]==='design'&&row[3]==='csa');
 assert.equal(csvRow[currentTable.headers.indexOf('Baseline')],'smia / mlp');
 assert.equal(csvRow[currentTable.headers.indexOf('全部 · AUROC · 相对 baseline (%)')],'+40.00%');
 $('csv').onclick();assert.match(exported.content,/\+40.00%/);
 choices.shadow.delete('smia');render();
 assert.equal(relativeChange(ciao,'all','AUROC').text,'+40.00%');
-assert.equal(currentTable.rows.some(row=>row[2]==='smia'),false);
+assert.equal(currentTable.rows.some(row=>row[3]==='smia'),false);
 choices.seed.delete('43');render();
 ciao=aggregate(selectedRows()).find(row=>row.target==='design'&&row.dataset==='ciao');
 assert.equal(relativeChange(ciao,'all','AUROC').text,'+50.00%');
@@ -231,6 +231,23 @@ assert.match(relativeChange(ciao42,'all','AUROC').reason,/当前组合缺少/);
 $('baseline').value='';$('baseline').onchange();
 assert.equal(relativeChange(ciao43,'all','AUROC'),null);
 assert.equal(currentTable.headers.includes('Baseline'),false);
+
+// SAL variants aggregate separately, and relative losses match seeds before averaging.
+const sal42=fixture('ciao','design','smia',42,0.3);sal42.defense='SAL λ=0.01';
+const sal43=fixture('ciao','design','smia',43,0.48);sal43.defense='SAL λ=0.01';
+const salOther=fixture('ciao','design','smia',42,0.2);salOther.defense='SAL λ=0.02';
+report.rows=[fixture('ciao','design','smia',42,0.4),fixture('ciao','design','smia',43,0.6),sal42,sal43,salOther];
+for(const key of Object.keys(dimensions))choices[key]=new Set(report.rows.map(row=>String(row[key])));
+$('aggregate').checked=true;render();
+assert.equal(currentTable.rows.length,3);
+assert.match($('defense-table').innerHTML,/22.5000 ± 3.5355/);
+assert.match($('defense-table').innerHTML,/50.0000/);
+choices.defense.delete('None');render();
+assert.equal(currentTable.rows.length,2);
+assert.match($('defense-table').innerHTML,/22.5000 ± 3.5355/);
+$('aggregate').checked=false;render();
+assert.equal(currentTable.rows.length,3);
+assert.match($('defense-table').innerHTML,/25.0000/);
 '''
         program = self.directory / "client-test.js"
         program.write_text(harness + script + assertions)

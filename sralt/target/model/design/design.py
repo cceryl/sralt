@@ -1,5 +1,6 @@
 import typing
 import logging
+from itertools import cycle
 from typing import Callable
 from tqdm import tqdm
 
@@ -19,6 +20,7 @@ from .rating import RatingGCN
 from .layers import MeanGraph, MeanPropagation
 from sralt.target.model import TargetModel
 from sralt.target.data import TargetData, TrainTargetDataset, EvalTargetDataset
+from sralt.target.defense import SocialAdversarialLearning, SocialPairSampler
 from sralt.utils import timer, model_fingerprint, compute_recommendation_metrics, recommend_items
 from sralt.utils import DataLoader, EarlyStopping
 
@@ -32,7 +34,7 @@ class DESIGN(TargetModel):
     def __init__(
         self, num_users: int, num_items: int, embed_dim: int,
         user_fusion_layers: list[int], item_fusion_layers: list[int],
-        distill_weight: float
+        distill_weight: float, defense: DictConfig | None = None
     ):
         """
         :param num_users: Total number of users.
@@ -41,6 +43,7 @@ class DESIGN(TargetModel):
         :param user_fusion_layers: Indices of layers to sum when computing the final embedding for users.
         :param item_fusion_layers: Indices of layers to sum when computing the final embedding for items.
         :param distill_weight: Weight for the distillation loss.
+        :param defense: Optional SAL instantiation config; zero weight skips all defense work.
         """
         super().__init__(num_users, num_items)
 
@@ -49,6 +52,10 @@ class DESIGN(TargetModel):
         self.twin = TwinGCN(num_users, num_items, embed_dim, user_fusion_layers, item_fusion_layers)
 
         self.distill_weight = distill_weight
+        self.defense: SocialAdversarialLearning | None = (
+            instantiate(defense, embed_dim=embed_dim)
+            if defense is not None and defense.loss_weight != 0 else None
+        )
         self._graphs: dict[str, MeanGraph] = {}
 
     def _apply(self, fn: Callable, recurse: bool = True):
@@ -134,6 +141,10 @@ class DESIGN(TargetModel):
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+        defense = self.defense
+        if defense is not None:
+            pair_sampler = SocialPairSampler(data.social_edge_index, self.num_users, defense.sample_ratio)
+            surrogate_optimizer = defense.create_optimizer()
 
         model_name = self.__class__.__name__
         metric_names = [
@@ -144,7 +155,19 @@ class DESIGN(TargetModel):
         for epoch in range(1, num_epochs + 1):
             self.train()
 
+            if defense is not None:
+                if epoch > defense.surrogate_warmup_epochs:
+                    with torch.no_grad():
+                        snapshot = self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index)[:self.num_users]
+                    surrogate_loss = defense.fit_surrogate(snapshot, pair_sampler, surrogate_optimizer)
+                    logging.info(f'SAL epoch {epoch:04d}: surrogate_bce={surrogate_loss:.6f}')
+                    if writer is not None:
+                        writer.add_scalar(f'{model_name}/SAL/surrogate_bce', surrogate_loss, epoch)
+                defense_batches = cycle(pair_sampler.batches(len(train_loader)))
+
             total_loss = 0.0
+            total_recommendation_loss = 0.0
+            total_defense_loss = 0.0
             total_samples = 0
 
             for users, pos_items, neg_items in tqdm(train_loader, desc=f'Epoch {epoch}/{num_epochs}'):
@@ -156,14 +179,35 @@ class DESIGN(TargetModel):
                 batch_edges = torch.cat([pos_edges, neg_edges], dim=1)
                 labels = torch.cat([torch.ones_like(users), torch.zeros_like(users)])
                 scores = self(data.social_edge_index, undirected_behavioral_edge_index, batch_edges)
-                loss = self.calculate_loss(scores, labels)
+                recommendation_loss = self.calculate_loss(scores, labels)
+                loss = recommendation_loss
+                if defense is not None:
+                    positive_pairs, negative_pairs = next(defense_batches)
+                    # SAL matches the deployed Twin readout on the training graph.
+                    # Recommendation supervision above retains its batch edge mask.
+                    user_embeds = self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index)[:self.num_users]
+                    defense_loss = defense.distribution_loss(user_embeds, positive_pairs, negative_pairs)
+                    loss = recommendation_loss + defense.loss_weight * defense_loss
+                    total_defense_loss += defense_loss.item() * users.size(0)
                 loss.backward()
                 optimizer.step()
 
                 total_loss += loss.item() * users.size(0)
+                total_recommendation_loss += recommendation_loss.item() * users.size(0)
                 total_samples += users.size(0)
 
             average_loss = total_loss / total_samples
+            if defense is not None:
+                recommendation_loss_value = total_recommendation_loss / total_samples
+                defense_loss_value = total_defense_loss / total_samples
+                logging.info(
+                    f'SAL epoch {epoch:04d}: recommendation_loss={recommendation_loss_value:.6f}, '
+                    f'defense_loss={defense_loss_value:.6f}, total_loss={average_loss:.6f}'
+                )
+                if writer is not None:
+                    writer.add_scalar(f'{model_name}/SAL/recommendation_loss', recommendation_loss_value, epoch)
+                    writer.add_scalar(f'{model_name}/SAL/defense_loss', defense_loss_value, epoch)
+                    writer.add_scalar(f'{model_name}/SAL/weighted_defense_loss', defense.loss_weight * defense_loss_value, epoch)
             if writer is not None:
                 writer.add_scalar(f'{model_name}/Loss/train', average_loss, epoch)
 
@@ -215,7 +259,9 @@ class DESIGN(TargetModel):
             val_batch_size=val_batch_size,
             val_num_negatives=val_num_negatives,
             num_epochs=num_epochs,
-            optimizer=instantiate(optimizer, params=self.parameters()),
+            optimizer=instantiate(optimizer, params=(
+                parameter for name, parameter in self.named_parameters() if not name.startswith('defense.')
+            )),
             metrics=instantiate(metrics),
             early_stopping=instantiate(early_stopping, model=self)
         )
@@ -275,6 +321,9 @@ class DESIGN(TargetModel):
         )
 
     def __repr__(self) -> str:
+        defense_description = (
+            f'defense=SAL(loss_weight={self.defense.loss_weight}), ' if self.defense is not None else ''
+        )
         return (
             f'{self.__class__.__name__}('
             f'num_users={self.num_users}, '
@@ -283,5 +332,6 @@ class DESIGN(TargetModel):
             f'user_fusion_layers={self.twin.user_fusion_layers}, '
             f'item_fusion_layers={self.twin.item_fusion_layers}, '
             f'distill_weight={self.distill_weight}, '
+            f'{defense_description}'
             f'fingerprint={model_fingerprint(self)})'
         )

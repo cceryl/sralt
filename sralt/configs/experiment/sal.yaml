@@ -1,0 +1,10 @@
+# @package _global_
+# DESIGN only. Each defense setting retrains the black-box SMIA attack.
+hydra:
+  sweeper:
+    params:
+      target/data: ciao,epinions,flickr,yelp
+      target/model: design,design_sal
+      shadow/model: smia
+      attack/model: mlp
+      seed: 42,43,44,45,46

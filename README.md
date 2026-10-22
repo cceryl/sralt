@@ -10,6 +10,8 @@ SMIA now follows the authors' row-normalized propagation, regularization and raw
 
 DESIGN follows its original supplementary implementation in PyTorch, including batch edge removal, degree-dependent self weights, independent social/interaction chains, pointwise BCE and mutual distillation. It retains SRALT's shared data, training and evaluation protocol. Its `author-aligned-v1` configuration separates new model caches from the earlier implementation; see the [DESIGN migration notes](docs/archive/design-reproduction.md).
 
+SAL (Socially Adversarial Learning) is available for DESIGN through `target/model=design_sal`. It alternates a surrogate social-relation classifier with target updates that match the means and sample variances of positive/negative predictions. The implementation follows the SMIA release while retaining this project's undirected pairs and evaluation protocol. GDMSR and EGCL are not adapted. See the [SAL reproduction notes](docs/archive/sal-reproduction.md).
+
 ## Project Structure
 
 - `docs/`: current protocol and running guide, with reference material in `docs/archive/` and dated history in `docs/legacy/`; start with [docs/README.md](docs/README.md)
@@ -65,6 +67,32 @@ python ./scripts/pipeline.py target/data=ciao target/model=lightgcn shadow/model
 ```
 
 LightGCN uses only user-item interactions. It follows the same data preprocessing, evaluation, and deployment-query protocol as the social targets. The existing comparison preset continues to select DESIGN, GDMSR, and EGCL.
+
+To train DESIGN with SAL and evaluate a newly trained black-box SMIA attack:
+
+```bash
+python scripts/pipeline_low_memory.py target/data=ciao target/model=design_sal shadow/model=smia attack/model=mlp
+```
+
+SAL settings live under `target.model.attribute.defense`; the default loss weight is 0.01. The first five epochs delay surrogate fitting while keeping the defense loss active, matching the author's script. Setting `loss_weight=0` skips surrogate initialization, fitting and sampling, and reproduces the no-defense computation and random sequence.
+
+Run paired experiments inside the project's aux-server Apptainer environment:
+
+```bash
+python scripts/reproduce_sal.py --phase minimal
+python scripts/reproduce_sal.py --phase scan
+python scripts/reproduce_sal.py --phase formal
+```
+
+The phases cover Ciao/seed42 (2 cases), Ciao+Flickr/seed42 with six loss weights (14 cases including baselines), and four datasets/seeds42–46 at weight 0.01 (40 cases). Use `--dry-run` to inspect the plan, or `--datasets`, `--seeds`, `--weights` to override it. Each completed case updates `runs/sal/<phase>.json` and an offline HTML report, including per-seed paired relative losses, elapsed time and peak CUDA memory. Re-running reuses model/metric caches. These commands describe experiment scope, not completed numerical results.
+
+To report existing defense results without training:
+
+```bash
+python scripts/comparison_report.py --datasets ciao flickr --targets design design_sal --pairs smia:mlp --sal-weights .01 .02 .05 .1 .2 .3 --output runs/sal/comparison.html
+```
+
+The report separates defense settings and compares each SAL seed with its matching no-defense run. `python scripts/pipeline_low_memory.py -m experiment=sal` is also available for the 40-case default training sweep.
 
 All modifiable parameters are listed in the configuration files under `sralt/configs`. You can override any parameter by specifying its path and value on the command line. For example, to change the number of quantizers in the CSA shadow model, you can use the following command:
 

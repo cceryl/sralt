@@ -51,6 +51,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pairs", nargs="+", default=[f"{s}:{a}" for s, a in MODEL_PAIRS],
                         help="shadow:attack config pairs, e.g. csa:mlp miner:enminer")
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
+    parser.add_argument("--sal-weights", nargs="+", type=float, default=[0.01],
+                        help="loss weights for target/model=design_sal; other targets are unaffected")
     parser.add_argument("--target-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_TARGET_METRICS)
     parser.add_argument("--shadow-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_SHADOW_METRICS)
     parser.add_argument("--allow-training", action=argparse.BooleanOptionalAction, default=ALLOW_TRAINING,
@@ -94,9 +96,12 @@ def compose_template(dataset: str, target: str, shadow: str, attack: str) -> Any
     return config
 
 
-def compose_case(dataset: str, target: str, shadow: str, attack: str, seed: int) -> Any:
+def compose_case(dataset: str, target: str, shadow: str, attack: str, seed: int,
+                 sal_weight: float | None = None) -> Any:
     config = copy.deepcopy(compose_template(dataset, target, shadow, attack))
     config.seed = seed
+    if sal_weight is not None:
+        config.target.model.attribute.defense.loss_weight = sal_weight
     # Keep interpolation syntax intact: disk_cache includes repr(DictConfig).
     return config
 
@@ -247,10 +252,15 @@ def collect(args: argparse.Namespace) -> dict:
     sources = source_digest()
     rows = []
     stages = ["attack"] + (["target"] if args.target_metrics else []) + (["shadow"] if args.shadow_metrics else [])
-    combinations = list(itertools.product(args.datasets, args.targets, args.pairs, args.seeds))
-    for index, (dataset, target, pair, seed) in enumerate(combinations, 1):
+    combinations = [(*case, weight)
+                    for case in itertools.product(args.datasets, args.targets, args.pairs, args.seeds)
+                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] == 'design_sal' else [None])]
+    for index, (dataset, target, pair, seed, sal_weight) in enumerate(combinations, 1):
         shadow, attack = pair.split(":")
         config = compose_case(dataset, target, shadow, attack, seed)
+        if sal_weight is not None:
+            config.target.model.attribute.defense.loss_weight = sal_weight
+        defense = f'SAL λ={sal_weight:g}' if sal_weight is not None else 'None'
         identities = {stage: cache_identity(config, stage, sources) for stage in stages}
         records, status = {}, {}
         refresh = args.refresh_metrics or os.environ.get("SRALT_CACHE_REFRESH") == "1"
@@ -271,7 +281,8 @@ def collect(args: argparse.Namespace) -> dict:
             status = {stage: "computed" if value == "missing" and records[stage] is not None else value
                       for stage, value in status.items()}
             logging.info("Results: %s", status)
-        rows.append(dict(dataset=dataset, target=target, shadow=shadow, attack=attack, seed=seed,
+        rows.append(dict(dataset=dataset, target='design' if target == 'design_sal' else target,
+                         target_config=target, defense=defense, shadow=shadow, attack=attack, seed=seed,
                          tail_ratio=float(config.attack.tail_ratio), status=status, missing_reason=missing_reason,
                          results={stage: record["metrics"] if record else None for stage, record in records.items()},
                          evaluated_at={stage: record["created_at"] if record else None for stage, record in records.items()}))
@@ -303,6 +314,7 @@ h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:0 0 16px}.muted,small{
 <div class="toolbar" style="margin-top:18px;margin-bottom:0"><label><input type="checkbox" id="aggregate" checked>合并种子（均值 ± 样本标准差）</label><label><input type="checkbox" id="recommendation">显示 Target / Shadow 指标</label><label><input type="checkbox" id="hide-empty">隐藏整行无记录的组合</label><label>Baseline（Shadow / Attack）<select id="baseline"><option value="">不比较</option></select></label><button id="reset">重置筛选</button><button id="csv">导出当前表格 CSV</button><button id="json">导出完整结果 JSON</button></div></section>
 <section class="card"><div id="summary"></div><p class="muted">数值范围 0–1；攻击指标越高表示攻击效果越强、隐私泄漏越大。均值按种子等权计算，误差线表示 ±1 样本标准差；单种子不估计标准差。缺失与非有限值显示为 —，不参与均值。</p><details><summary>评估口径与缓存信息</summary><p>头尾用户按现有 pipeline 的社交度划分，尾部比例见完整结果。Head/Tail 按关系端点计权：一个同组端点计一次，两个同组端点计两次；All 每条关系计一次。不同数据集、Target 分面展示，不混合平均。LightGCN 仅使用用户—物品交互，是非社交对照；其关系推断效果不能直接解释为使用社交边训练导致的成员泄漏。</p><p>缓存独立于训练 pipeline，键包含配置、种子、代码、数据文件元信息及 SRALT_CACHE_VERSION。相同配置重训后，请使用 --refresh-metrics 更新；该选项仍复用现有训练缓存。页面筛选不会运行实验。结果状态 cached/computed/missing 与测试时间见 JSON。</p><p id="provenance" class="muted"></p></details></section>
 <section class="card"><h2>攻击效果</h2><p class="muted">点击列标题排序；绿色标记相同数据集与 Target（逐种子模式再按 seed 分组）内的最高值。n 为参与该指标均值的有效种子数。</p><p id="baseline-note" class="muted" hidden>Δ =（当前值 − baseline 值）/ baseline 值 × 100%，是相对变化，不是百分点。仅比较相同数据集、Target；逐种子时还匹配 seed。合并时使用所选种子各自的有效均值（有效种子数可能不同）。Baseline 不受 Shadow/Attack 行筛选影响；缺失或为零时显示 Δ —，悬停可查看原因。正数表示攻击指标提高，隐私泄漏更强。</p><div class="table-wrap" id="attack-table"></div></section>
+<section class="card"><h2>SAL 配对效果</h2><p class="muted">逐种子匹配无防御基线，显示相对下降 (基线 − SAL) / 基线。攻击指标下降为防御效果，推荐指标下降为效用损失。先计算各匹配种子的变化，再汇总均值与样本标准差。</p><div class="table-wrap" id="defense-table"></div></section>
 <section class="card"><h2>指标图表</h2><div class="toolbar"><label>指标 <select id="chart-metric"></select></label><label>人群 <select id="chart-group"><option value="all">全部</option><option value="head">头部</option><option value="tail">尾部</option></select></label></div><div class="charts" id="charts"></div></section>
 <section class="card" id="rec-section" hidden><h2>Target / Shadow 推荐指标</h2><p class="muted">同一阶段相同配置的结果复用。若生成时未启用，请用 --target-metrics / --shadow-metrics 重新运行脚本。</p><div class="table-wrap" id="rec-table"></div></section>
 <script type="application/json" id="report-data">__REPORT_DATA__</script>
@@ -310,7 +322,8 @@ h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:0 0 16px}.muted,small{
 'use strict';
 const report=JSON.parse(document.getElementById('report-data').textContent);
 const $=id=>document.getElementById(id), groups={all:'全部',head:'头部',tail:'尾部'};
-const dimensions={dataset:'数据集',target:'Target',shadow:'Shadow',attack:'Attack',seed:'种子'};
+for(const row of report.rows)row.defense??='None';
+const dimensions={dataset:'数据集',target:'Target',defense:'防御',shadow:'Shadow',attack:'Attack',seed:'种子'};
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const choices={}, initial={}; let sortKey='dataset',sortDirection=1,currentTable={headers:[],rows:[]};
 const unique=items=>[...new Set(items)];
@@ -338,14 +351,14 @@ const number=n=>Number.isFinite(n)?n.toFixed(4):'—';
 function stats(values){const valid=values.filter(Number.isFinite),n=valid.length;if(!n)return {mean:null,sd:null,n:0};const mean=valid.reduce((a,b)=>a+b,0)/n;return {mean,sd:n>1?Math.sqrt(valid.reduce((s,v)=>s+(v-mean)**2,0)/(n-1)):null,n};}
 function statisticText(s){return s.n?`${number(s.mean)}${s.sd===null?'':` ± ${number(s.sd)}`} (n=${s.n})`:'— (n=0)';}
 function selectedRows(){return report.rows.filter(row=>Object.keys(dimensions).every(key=>choices[key].has(String(row[key]))));}
-function aggregate(rows){const buckets=new Map();for(const row of rows){const key=JSON.stringify([row.dataset,row.target,row.shadow,row.attack,...($('aggregate').checked?[]:[row.seed])]);if(!buckets.has(key))buckets.set(key,{...row,runs:[]});buckets.get(key).runs.push(row);}return [...buckets.values()];}
+function aggregate(rows){const buckets=new Map();for(const row of rows){const key=JSON.stringify([row.dataset,row.target,row.defense,row.shadow,row.attack,...($('aggregate').checked?[]:[row.seed])]);if(!buckets.has(key))buckets.set(key,{...row,runs:[]});buckets.get(key).runs.push(row);}return [...buckets.values()];}
 function metricStats(row,stage,group,metric){return stats(row.runs.map(r=>r.results[stage]?.[group]?.[metric]));}
 function relativeChange(row,group,metric){
   if(!$('baseline').value)return null;
   const [shadow,attack]=JSON.parse($('baseline').value);
   if(row.shadow===shadow&&row.attack===attack)return {text:'baseline',isBaseline:true,value:null,reason:'当前选择的 baseline'};
   // Keep the reference available when its rows are hidden by model filters.
-  const reference={runs:report.rows.filter(run=>run.dataset===row.dataset&&run.target===row.target&&
+  const reference={runs:report.rows.filter(run=>run.dataset===row.dataset&&run.target===row.target&&run.defense===row.defense&&
     run.shadow===shadow&&run.attack===attack&&choices.seed.has(String(run.seed))&&
     ($('aggregate').checked||run.seed===row.seed))};
   const current=metricStats(row,'attack',group,metric),base=metricStats(reference,'attack',group,metric);
@@ -359,7 +372,7 @@ function relativeChange(row,group,metric){
 function changeLabel(change){return change.isBaseline?'baseline':`Δ ${change.text}`;}
 function columns(){return [...choices.groups].flatMap(group=>[...choices.metrics].map(metric=>({group,metric,key:`${group}|${metric}`,label:`${groups[group]} · ${metric}`})));}
 function sorted(rows,cols){return [...rows].sort((a,b)=>{const col=cols.find(c=>c.key===sortKey);const av=col?metricStats(a,'attack',col.group,col.metric).mean:a[sortKey],bv=col?metricStats(b,'attack',col.group,col.metric).mean:b[sortKey];if(av==null)return bv==null?0:1;if(bv==null)return -1;return (typeof av==='number'?av-bv:String(av).localeCompare(String(bv)))*sortDirection;});}
-function renderTable(rows){const cols=columns(),dims=['dataset','target','shadow','attack',...($('aggregate').checked?[]:['seed'])],hasBaseline=Boolean($('baseline').value),headers=[...dims.map(k=>dimensions[k]),'有效/所选种子',...(hasBaseline?['Baseline']:[]),...cols.flatMap(c=>hasBaseline?[c.label,`${c.label} · 相对 baseline (%)`]:[c.label])];
+function renderTable(rows){const cols=columns(),dims=['dataset','target','defense','shadow','attack',...($('aggregate').checked?[]:['seed'])],hasBaseline=Boolean($('baseline').value),headers=[...dims.map(k=>dimensions[k]),'有效/所选种子',...(hasBaseline?['Baseline']:[]),...cols.flatMap(c=>hasBaseline?[c.label,`${c.label} · 相对 baseline (%)`]:[c.label])];
   currentTable={headers,rows:[]};if(!rows.length){$('attack-table').innerHTML='<div class="empty">没有符合筛选的组合。</div>';return;}
   const best=new Map(),bucket=r=>JSON.stringify([r.dataset,r.target,...($('aggregate').checked?[]:[r.seed])]);
   for(const row of rows)for(const col of cols){const value=metricStats(row,'attack',col.group,col.metric).mean,key=bucket(row)+col.key;if(value!==null)best.set(key,Math.max(best.get(key)??-Infinity,value));}
@@ -372,19 +385,37 @@ function renderCharts(rows){const metric=$('chart-metric').value,group=$('chart-
   $('charts').innerHTML='';if(!rows.length){$('charts').textContent='没有符合筛选的组合。';return;}
   for(const facet of facets.values()){const width=760,left=245,right=65,height=64+facet.length*42,scale=width-left-right;let svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHTML(metric+' '+groups[group])}">`;
     for(let i=0;i<=5;i++){const x=left+i*scale/5;svg+=`<line x1="${x}" x2="${x}" y1="25" y2="${height-25}" stroke="#e1e8f0"/><text x="${x}" y="16" text-anchor="middle" font-size="12">${(i/5).toFixed(1)}</text>`;}
-    facet.forEach((row,i)=>{const y=36+i*42,s=metricStats(row,'attack',group,metric),change=relativeChange(row,group,metric),label=`${row.shadow} / ${row.attack}${$('aggregate').checked?'':` / ${row.seed}`}`,color=['#3978d2','#1b927f','#9866c9','#da8242'][initial.shadow.indexOf(row.shadow)%4];
+    facet.forEach((row,i)=>{const y=36+i*42,s=metricStats(row,'attack',group,metric),change=relativeChange(row,group,metric),label=`${row.defense} / ${row.shadow} / ${row.attack}${$('aggregate').checked?'':` / ${row.seed}`}`,color=['#3978d2','#1b927f','#9866c9','#da8242'][initial.shadow.indexOf(row.shadow)%4];
       svg+=`<text x="${left-12}" y="${y+12}" text-anchor="end" font-size="13">${escapeHTML(label)}</text>`;
       if(s.n){const x=left+s.mean*scale,lo=left+Math.max(0,s.mean-(s.sd||0))*scale,hi=left+Math.min(1,s.mean+(s.sd||0))*scale;svg+=`<rect x="${left}" y="${y}" width="${Math.max(0,s.mean*scale)}" height="20" rx="3" fill="${color}"><title>${escapeHTML(label+' · '+statisticText(s)+(change?' · '+changeLabel(change):''))}</title></rect>`;if(s.sd!==null)svg+=`<path d="M ${lo} ${y+10} H ${hi} M ${lo} ${y+5} V ${y+15} M ${hi} ${y+5} V ${y+15}" stroke="#173047" fill="none"/>`;svg+=`<text x="${width-right+8}" y="${y+13}" font-size="12">${number(s.mean)}</text>`;}else svg+=`<text x="${left+8}" y="${y+13}" font-size="12">无有效结果</text>`;
     });svg+='</svg>';const node=document.createElement('div');node.className='chart';node.innerHTML=`<h2>${escapeHTML(facet[0].dataset)} / ${escapeHTML(facet[0].target)}</h2><small>${escapeHTML(metric)} · ${groups[group]}</small>${svg}`;$('charts').append(node);}
 }
-function renderRecommendation(rows){$('rec-section').hidden=!$('recommendation').checked;if($('rec-section').hidden)return;let html='<table><thead><tr><th>数据集</th><th>Target</th><th>Shadow</th><th>阶段</th><th>指标</th><th>均值 ± 标准差</th></tr></thead><tbody>';const seen=new Set();let count=0;
-  for(const row of rows)for(const stage of ['target','shadow']){const metrics=unique(row.runs.flatMap(r=>Object.keys(r.results[stage]?.all||{})));const base=[row.dataset,row.target,...(stage==='shadow'?[row.shadow]:[]),...($('aggregate').checked?[]:[row.seed])];for(const metric of metrics){const key=JSON.stringify([stage,metric,...base]);if(seen.has(key))continue;seen.add(key);count++;const matching=selectedRows().filter(r=>r.dataset===row.dataset&&r.target===row.target&&(stage==='target'||r.shadow===row.shadow)&&($('aggregate').checked||r.seed===row.seed));const perSeed=new Map(matching.filter(r=>r.results[stage]).map(r=>[r.seed,r]));const s=stats([...perSeed.values()].map(r=>r.results[stage]?.all?.[metric]));html+='<tr>'+[row.dataset,row.target,stage==='shadow'?row.shadow:'—',stage,metric].map(v=>`<td>${escapeHTML(v)}</td>`).join('')+`<td>${escapeHTML(($('aggregate').checked?'':`seed=${row.seed} · `)+statisticText(s))}</td></tr>`;}}
+function renderRecommendation(rows){$('rec-section').hidden=!$('recommendation').checked;if($('rec-section').hidden)return;let html='<table><thead><tr><th>数据集</th><th>Target</th><th>防御</th><th>Shadow</th><th>阶段</th><th>指标</th><th>均值 ± 标准差</th></tr></thead><tbody>';const seen=new Set();let count=0;
+  for(const row of rows)for(const stage of ['target','shadow']){const metrics=unique(row.runs.flatMap(r=>Object.keys(r.results[stage]?.all||{})));const base=[row.dataset,row.target,row.defense,...(stage==='shadow'?[row.shadow]:[]),...($('aggregate').checked?[]:[row.seed])];for(const metric of metrics){const key=JSON.stringify([stage,metric,...base]);if(seen.has(key))continue;seen.add(key);count++;const matching=selectedRows().filter(r=>r.dataset===row.dataset&&r.target===row.target&&r.defense===row.defense&&(stage==='target'||r.shadow===row.shadow)&&($('aggregate').checked||r.seed===row.seed));const perSeed=new Map(matching.filter(r=>r.results[stage]).map(r=>[r.seed,r]));const s=stats([...perSeed.values()].map(r=>r.results[stage]?.all?.[metric]));html+='<tr>'+[row.dataset,row.target,row.defense,stage==='shadow'?row.shadow:'—',stage,metric].map(v=>`<td>${escapeHTML(v)}</td>`).join('')+`<td>${escapeHTML(($('aggregate').checked?'':`seed=${row.seed} · `)+statisticText(s))}</td></tr>`;}}
   $('rec-table').innerHTML=count?html+'</tbody></table>':'<div class="empty">当前结果没有推荐指标。生成时启用 --target-metrics / --shadow-metrics。</div>';
+}
+function renderDefense(rows){
+  const buckets=new Map();
+  for(const row of rows){
+    if(!row.defense.startsWith('SAL '))continue;
+    const baseline=report.rows.find(r=>r.dataset===row.dataset&&r.target===row.target&&r.defense==='None'&&r.shadow===row.shadow&&r.attack===row.attack&&r.seed===row.seed);
+    for(const stage of ['attack','target'])for(const [group,metrics] of Object.entries(row.results[stage]||{}))for(const [metric,value] of Object.entries(metrics)){
+      if(stage==='attack'&&(!choices.groups.has(group)||!choices.metrics.has(metric)))continue;
+      const base=baseline?.results[stage]?.[group]?.[metric];
+      const key=JSON.stringify([row.dataset,row.target,row.defense,row.shadow,row.attack,stage,group,metric,...($('aggregate').checked?[]:[row.seed])]);
+      if(!buckets.has(key))buckets.set(key,{row,stage,group,metric,base:[],value:[],changes:[],seeds:[]});
+      const bucket=buckets.get(key);
+      if(Number.isFinite(base)&&Number.isFinite(value)&&base!==0){bucket.base.push(base);bucket.value.push(value);bucket.changes.push((base-value)/base*100);bucket.seeds.push(row.seed);}
+    }
+  }
+  let html='<table><thead><tr>'+['数据集','Target','防御','Shadow / Attack','阶段 / 人群','指标','匹配种子','无防御','SAL','相对下降 (%)'].map(v=>`<th>${v}</th>`).join('')+'</tr></thead><tbody>';
+  for(const b of buckets.values())html+='<tr>'+[b.row.dataset,b.row.target,b.row.defense,`${b.row.shadow} / ${b.row.attack}`,`${b.stage} / ${groups[b.group]||b.group}`,b.metric,b.seeds.join(', ')||'缺少配对结果',statisticText(stats(b.base)),statisticText(stats(b.value)),statisticText(stats(b.changes))].map(v=>`<td>${escapeHTML(v)}</td>`).join('')+'</tr>';
+  $('defense-table').innerHTML=buckets.size?html+'</tbody></table>':'<p class="muted">选择 DESIGN 与 DESIGN_SAL 的配对结果以查看防御效果。</p>';
 }
 function render(){const selected=selectedRows(),allRows=aggregate(selected),rows=$('hide-empty').checked?allRows.filter(row=>row.runs.some(run=>run.results.attack!=null)):allRows,cached=selected.filter(r=>r.status.attack==='cached').length,computed=selected.filter(r=>r.status.attack==='computed').length,missing=selected.filter(r=>!r.results.attack).length;
   $('baseline-note').hidden=!$('baseline').value;
   $('summary').textContent=`${rows.length} 个展示组合 · 隐藏 ${allRows.length-rows.length} 个无记录组合 · ${selected.length} 次种子运行 · 攻击结果：缓存 ${cached} / 本次计算 ${computed} / 缺失 ${missing}`;
-  renderTable(rows);renderCharts(rows);renderRecommendation(allRows);
+  renderTable(rows);renderCharts(rows);renderRecommendation(allRows);renderDefense(selected);
 }
 function download(name,content,type){const url=URL.createObjectURL(new Blob(['\ufeff',content],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('csv').onclick=()=>{const quote=v=>'"'+String(v).replace(/"/g,'""')+'"';download('sralt-comparison.csv',[currentTable.headers,...currentTable.rows].map(row=>row.map(quote).join(',')).join('\r\n'),'text/csv;charset=utf-8');};
