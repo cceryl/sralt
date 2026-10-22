@@ -86,6 +86,8 @@ class AttackData:
         self.test_social_edge_index = self.test_social_edge_index.to(device)
 
         self.user_features = self.user_features.to(device)
+        if getattr(self, 'side_features', None) is not None:
+            self.side_features = {key: value.to(device) for key, value in self.side_features.items()}
         return self
 
     def __init__(self, target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel, val_ratio: float):
@@ -135,7 +137,11 @@ class AttackData:
         self.test_social_edge_index = directed_target_edges[:, unseen_mask]
 
         # Extract user features from the shadow model
-        self.user_features = shadow_model.get_user_features(shadow_data)
+        if hasattr(shadow_model, 'get_attack_payload'):
+            self.user_features, self.side_features = shadow_model.get_attack_payload(shadow_data)
+            self.shadow_diagnostics = shadow_model.last_diagnostics
+        else:
+            self.user_features = shadow_model.get_user_features(shadow_data)
 
         self.to(torch.device('cpu'))
         logging.info(
@@ -156,11 +162,15 @@ class AttackData:
         )
 
     def cache_key(self) -> tuple:
-        return (
+        key = (
             repr(self), self.num_users, self.target_social_edge_index, self.shadow_social_edge_index,
             self.public_social_edge_index,
             self.train_social_edge_index, self.val_social_edge_index, self.test_social_edge_index, self.user_features
         )
+        # Keep the legacy key identical when no structured payload is supplied.
+        if getattr(self, 'side_features', None) is not None:
+            return key + (self.side_features,)
+        return key
 
 
 @disk_cache(

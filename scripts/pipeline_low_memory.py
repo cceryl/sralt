@@ -6,11 +6,13 @@ import logging
 import hydra
 import torch
 from hydra.utils import instantiate
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 from sralt.target import load_target_data, load_target_model, test_target_model
 from sralt.shadow import load_shadow_data, load_shadow_model, test_shadow_model
 from sralt.attack import load_attack_data, load_attack_model, test_attack_model
+from sralt.attack.report import save_attack_report
 
 
 def release_memory(device: torch.device) -> None:
@@ -97,6 +99,8 @@ def run_pipeline(config: DictConfig) -> None:
                 name = metric._target_.split('.')[-1].removeprefix('Binary')
                 logging.info(f'Test {group} {name}: {value:.4f}')
         logging.info(f'Model representation: {attack_model}')
+        if HydraConfig.initialized():
+            save_attack_report(attack_data, attack_model, HydraConfig.get().runtime.output_dir)
 
         del attack_model, attack_data
         release_memory(device)

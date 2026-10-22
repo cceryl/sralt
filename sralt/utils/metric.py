@@ -1,4 +1,6 @@
 import typing
+import json
+import logging
 from typing import Callable
 
 import torch
@@ -133,9 +135,15 @@ def compute_attack_metrics(
 
     groups = ['all', 'head', 'tail']
     calculators = {group: [metric.clone().to(device) for metric in metrics] for group in groups}
+    # Reuse precisely the same test pairs/predictions, without resampling negatives.
+    dataset = getattr(eval_loader, 'dataset', None)
+    report_test = getattr(dataset, 'split', None) == 'test' and hasattr(dataset, 'attack_data')
+    test_batches = []
 
     for user1, user2, labels in eval_loader:
         probs = predictor(user1, user2)
+        if report_test:
+            test_batches.append((torch.stack([user1, user2]).cpu(), probs.cpu(), labels.cpu()))
 
         for calculator in calculators['all']:
             calculator.update(probs, labels)
@@ -154,7 +162,16 @@ def compute_attack_metrics(
     def compute_group_metrics(group: str) -> list[float]:
         return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators[group]]
 
-    return compute_group_metrics('all'), compute_group_metrics('head'), compute_group_metrics('tail')
+    results = compute_group_metrics('all'), compute_group_metrics('head'), compute_group_metrics('tail')
+    if report_test:
+        from .attack_groups import grouped_attack_report
+        edges = torch.cat([batch[0] for batch in test_batches], dim=1)
+        probs = torch.cat([batch[1] for batch in test_batches])
+        labels = torch.cat([batch[2] for batch in test_batches])
+        report = grouped_attack_report(edges, probs, labels, dataset.attack_data, head_indices, tail_indices, metrics)
+        dataset.attack_data.subgroup_metrics = report
+        logging.info('Attack test subgroups: %s', json.dumps(report))
+    return results
 
 
 class TPRatFPR(Metric):

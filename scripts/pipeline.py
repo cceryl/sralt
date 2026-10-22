@@ -15,6 +15,7 @@ from hydra.core.hydra_config import HydraConfig
 from sralt.target import TargetData, TargetModel, load_target_data, load_target_model, test_target_model
 from sralt.shadow import ShadowData, ShadowModel, load_shadow_data, load_shadow_model, test_shadow_model
 from sralt.attack import AttackData, AttackModel, load_attack_data, load_attack_model, test_attack_model
+from sralt.attack.report import save_attack_report
 
 
 def target_stage(
@@ -197,6 +198,7 @@ def main(config: DictConfig):
     )
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
+    save_attack_report(attack_data, attack_model, output_dir)
     torch.save(target_data, output_dir / 'target_data.pth')
     torch.save(shadow_data, output_dir / 'shadow_data.pth')
     torch.save(attack_data, output_dir / 'attack_data.pth')
