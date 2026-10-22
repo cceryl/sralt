@@ -3,9 +3,10 @@ defaults:
   - _self_
 
 name: DESIGN_SAL
-revision: sal-author-aligned-v1
+revision: sal-isolated-v2
 
 attribute:
+  _target_: sralt.target.model.design.DefendedDESIGN
   _recursive_: False
   defense:
     _target_: sralt.target.defense.SocialAdversarialLearning

@@ -18,6 +18,7 @@ from sralt.target.data import TargetData
 from sralt.target.defense import SocialPairSampler
 from sralt.shadow.data import load_shadow_data
 from sralt.target.model import create_target_model, load_target_model
+from sralt.target.model.design import DESIGN, DefendedDESIGN
 from sralt.utils import model_fingerprint, set_seed
 
 
@@ -154,13 +155,50 @@ class SALTests(unittest.TestCase):
         models, states = [], []
         for config in (base_config, zero_config):
             model = create_target_model(42, True, torch.device('cpu'), config.target.model.attribute, 12, 20)
-            self.assertIsNone(model.defense)
+            if isinstance(model, DefendedDESIGN):
+                self.assertIsNone(model.defense)
+            else:
+                self.assertFalse(hasattr(model, 'defense'))
             set_seed(42, deterministic=True)
             model.train_model(data=data, writer=None, **config.target.model.train)
             states.append(torch.get_rng_state())
             models.append(model)
-        self.assertEqual(model_fingerprint(models[0]), model_fingerprint(models[1]))
+        self.assertIs(type(models[0]), DESIGN)
+        self.assertIs(type(models[1]), DefendedDESIGN)
+        self.assertEqual(models[0].state_dict().keys(), models[1].state_dict().keys())
+        for name, value in models[0].state_dict().items():
+            torch.testing.assert_close(value, models[1].state_dict()[name], rtol=0, atol=0)
         torch.testing.assert_close(states[0], states[1])
+
+    def test_legacy_baseline_cache_reaches_report_and_shadow_without_constructor_or_retraining(self):
+        config, data = configuration('design'), make_data()
+        config.device = {'_target_': 'torch.device', 'device': 'cpu'}
+        config.deterministic = True
+        del config.writer
+        with tempfile.TemporaryDirectory() as directory:
+            previous = os.getcwd()
+            try:
+                os.chdir(directory)
+                config.target.data.directory = directory
+                original = load_target_model(42, True, torch.device('cpu'), config.target.model, data)
+                self.assertIs(type(original), DESIGN)
+                self.assertFalse(hasattr(original, 'defense'))
+                original_repr = repr(original)
+                with patch.object(DESIGN, '__init__', side_effect=AssertionError('Reconstructed cached baseline')), \
+                        patch.object(DESIGN, 'train_model', side_effect=AssertionError('Retrained cached baseline')):
+                    cached = load_target_model(42, True, torch.device('cpu'), config.target.model, data)
+                    self.assertEqual(repr(cached), original_repr)
+                    self.assertEqual(model_fingerprint(cached), model_fingerprint(original))
+                    with patch.object(comparison_report, 'compose_case', return_value=config), \
+                            patch.object(comparison_report, 'CACHE_DIR', Path(directory) / 'metrics'), \
+                            patch('sralt.target.load_target_data', return_value=data):
+                        result = reproduce_sal.run_case('ciao', 42, None, 'legacy-baseline-test', False)
+                    self.assertTrue(all(result['results'][stage] for stage in ('target', 'shadow', 'attack')))
+                self.assertEqual(len(list(Path('.cache/target/model/DESIGN').glob('*.pkl'))), 1)
+                self.assertTrue(list(Path('.cache/shadow/data/synthetic/DESIGN').glob('*.pkl')))
+                self.assertNotIn('defense', repr(cached))
+            finally:
+                os.chdir(previous)
 
     def test_warmup_graphs_full_epoch_optimizer_groups_and_strict_reload(self):
         config, data = configuration(), make_data()
@@ -178,7 +216,7 @@ class SALTests(unittest.TestCase):
         with patch.object(defense, 'fit_surrogate', wraps=defense.fit_surrogate) as fit, \
                 patch.object(model, '_prepare_graphs', wraps=model._prepare_graphs) as graphs, \
                 patch.object(defense, 'distribution_loss', wraps=defense.distribution_loss) as distance, \
-                patch('sralt.target.model.design.design.instantiate', side_effect=record_optimizer):
+                patch('sralt.target.model.design.defended.instantiate', side_effect=record_optimizer):
             model.train_model(data=data, writer=writer, **config.target.model.train)
         self.assertEqual(fit.call_count, 1)
         self.assertEqual(distance.call_count, 12)  # ceil(36 / 7) x two complete epochs.
@@ -190,8 +228,8 @@ class SALTests(unittest.TestCase):
         for call in graphs.call_args_list:
             torch.testing.assert_close(call.args[1], training_graph)
         tags = [call.args[0] for call in writer.add_scalar.call_args_list]
-        self.assertEqual(tags.count('DESIGN/SAL/surrogate_bce'), 1)
-        self.assertEqual(tags.count('DESIGN/SAL/defense_loss'), 2)
+        self.assertEqual(tags.count('DefendedDESIGN/SAL/surrogate_bce'), 1)
+        self.assertEqual(tags.count('DefendedDESIGN/SAL/defense_loss'), 2)
         restored = create_target_model(43, True, torch.device('cpu'), config.target.model.attribute, 12, 20)
         restored.load_state_dict(model.state_dict(), strict=True)
         before = model_fingerprint(restored)

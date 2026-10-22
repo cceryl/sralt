@@ -10,7 +10,7 @@ SMIA now follows the authors' row-normalized propagation, regularization and raw
 
 DESIGN follows its original supplementary implementation in PyTorch, including batch edge removal, degree-dependent self weights, independent social/interaction chains, pointwise BCE and mutual distillation. It retains SRALT's shared data, training and evaluation protocol. Its `author-aligned-v1` configuration separates new model caches from the earlier implementation; see the [DESIGN migration notes](docs/archive/design-reproduction.md).
 
-SAL (Socially Adversarial Learning) is available for DESIGN through `target/model=design_sal`. It alternates a surrogate social-relation classifier with target updates that match the means and sample variances of positive/negative predictions. The implementation follows the SMIA release while retaining this project's undirected pairs and evaluation protocol. GDMSR and EGCL are not adapted. See the [SAL reproduction notes](docs/archive/sal-reproduction.md).
+SAL (Socially Adversarial Learning) is available through `target/model=design_sal`, which selects the separate `DefendedDESIGN` subclass. The original `DESIGN` class and baseline configuration retain their pre-SAL implementation so existing baseline caches remain reusable. The defense configuration uses `revision: sal-isolated-v2` to separate it from earlier SAL caches. It alternates a surrogate social-relation classifier with target updates that match the means and sample variances of positive/negative predictions. The implementation follows the SMIA release while retaining this project's undirected pairs and evaluation protocol. GDMSR and EGCL are not adapted. See the [SAL reproduction notes](docs/archive/sal-reproduction.md).
 
 ## Project Structure
 
