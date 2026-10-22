@@ -60,12 +60,14 @@ class EarlyStopping:
         self.epsilon = epsilon
 
         self.counter = 0
+        self.epoch = 0
+        self.best_epoch = 0
         self.best_metric = -float('inf') if greater_is_better else float('inf')
         self.best_state = copy.deepcopy(model.state_dict())
 
     def step(self, metric: float) -> bool:
         """
-        Check if early stopping condition is met.
+        Check if early stopping condition is met. Call once per epoch after validation.
 
         :param metric: The current validation metric (e.g., loss or accuracy).
         :return: True if training should be stopped, False otherwise.
@@ -73,9 +75,11 @@ class EarlyStopping:
         if not math.isfinite(metric):
             raise FloatingPointError(f'Early stopping metric is not finite: {metric}.')
 
+        self.epoch += 1
         if self.greater_is_better == (metric > self.best_metric) and abs(metric - self.best_metric) > self.epsilon:
             self.counter = 0
             self.best_metric = metric
+            self.best_epoch = self.epoch
             self.best_state = copy.deepcopy(self.model.state_dict())
             return False
 
@@ -85,7 +89,8 @@ class EarlyStopping:
             return False
 
         logging.info(
-            f'Early stop after {self.patience} epochs without improvement (best metric={self.best_metric:.4f}).'
+            f'Early stop after {self.patience} epochs without improvement '
+            f'(best metric={self.best_metric:.4f}, best epoch={self.best_epoch}, current epoch={self.epoch}).'
         )
         return True
 
@@ -94,13 +99,15 @@ class EarlyStopping:
         Load the best model state saved during training.
         """
         self.model.load_state_dict(self.best_state)
-        logging.info(f'Loaded best model state with metric={self.best_metric:.4f}.')
+        logging.info(f'Loaded best model state with metric={self.best_metric:.4f} (epoch={self.best_epoch}).')
 
     def reset(self):
         """
         Reset the early stopping state.
         """
         self.counter = 0
+        self.epoch = 0
+        self.best_epoch = 0
         self.best_metric = -float('inf') if self.greater_is_better else float('inf')
         self.best_state = copy.deepcopy(self.model.state_dict())
         logging.info('Early stopping state is reset.')

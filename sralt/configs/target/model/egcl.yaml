@@ -28,6 +28,6 @@ train:
       k: 10
   early_stopping:
     _target_: sralt.utils.EarlyStopping
-    patience: 10
+    patience: 50
     greater_is_better: True
     epsilon: 1e-5
