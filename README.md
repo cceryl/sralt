@@ -98,6 +98,41 @@ The supplied Epinions files contain 922,267 rating rows and 355,754 trust rows. 
 
 Both comparison sweeps and the comparison report include Epinions by default. Other ablation and parameter presets retain their Ciao default; override `target/data=epinions` to use the new dataset.
 
+## EGCL Target-Only Tuning
+
+Run `python scripts/tune_egcl.py` to train only EGCL, using Flickr, seeds 42–46,
+learning rates 0.01/0.003/0.001, and early-stopping patience 50 (15 sequential trials).
+Other model settings come from `sralt/configs/target/model/egcl.yaml`.
+
+```bash
+# Preview the grid without loading data or training.
+python scripts/tune_egcl.py --dry-run
+# Quick first pass on one seed.
+python scripts/tune_egcl.py --seeds 42
+# Replace the default grid; fixed overrides use the same model-relative keys.
+python scripts/tune_egcl.py --datasets flickr ciao --seeds 42 \
+  --grid attribute.weight_reg=60,20,6 attribute.embedding_reg=2,0.5 \
+  --set train.optimizer.lr=0.003 --output runs/egcl_regularization
+```
+
+The script reuses the pipeline's target data/model caches. Rerunning a command
+loads completed models and recomputes evaluation; an interrupted training trial
+restarts from scratch. Each trial saves its target config, log and TensorBoard
+events. `results.json` contains completed trials from the current invocation;
+`summary.csv` / `summary.json` aggregate by dataset and model configuration,
+ordered by validation Recall+NDCG. Compare equal seed sets (`n`/`seeds`), especially
+while a sweep is incomplete. Use different output directories for separate sweeps.
+
+Diagnostics use full-history deployment recommendations with history masking:
+unique recommended items, item coverage, the fraction of all recommendation slots
+occupied by the most frequent K items, mean user cosine similarity and first
+singular-direction energy. K defaults to 30 (`--num-recommendations`); query
+batch size defaults to 256 (`--query-batch-size`). These diagnose homogeneity;
+validation recommendation metrics select models. `--no-diagnostics` skips this
+extra evaluation; `--test-metrics` additionally reports test metrics without using
+them for ranking. `--cpu` explicitly selects CPU. No shadow or attack model is
+trained, and the existing EGCL YAML is not modified.
+
 ## Social MINER Baselines
 
 Select the MINER shadow adapter together with the desired attack model:
