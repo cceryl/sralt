@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing_extensions import Self
 
 import torch
+from torch_geometric.utils import coalesce
 from omegaconf import DictConfig
 
 from sralt.target import TargetData
@@ -90,7 +91,7 @@ class AttackData:
             self.side_features = {key: value.to(device) for key, value in self.side_features.items()}
         return self
 
-    def __init__(self, target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel, val_ratio: float):
+    def __init__(self, target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel | None, val_ratio: float):
         """
         Initialize the attack data.
 
@@ -136,8 +137,11 @@ class AttackData:
         unseen_mask = torch.isin(target_edge_ids, shadow_edge_ids, invert=True)
         self.test_social_edge_index = directed_target_edges[:, unseen_mask]
 
-        # Extract user features from the shadow model
-        if hasattr(shadow_model, 'get_attack_payload'):
+        # A no-shadow attack consumes only the already queried Top-K item IDs.
+        if shadow_model is None:
+            edges = coalesce(shadow_data.behavioral_edge_index)
+            self.user_features = (edges[1] - self.num_users).reshape(self.num_users, shadow_data.num_recommendations)
+        elif hasattr(shadow_model, 'get_attack_payload'):
             self.user_features, self.side_features = shadow_model.get_attack_payload(shadow_data)
             self.shadow_diagnostics = shadow_model.last_diagnostics
         else:
@@ -180,7 +184,7 @@ class AttackData:
 )
 def load_attack_data(
     seed: int, deterministic: bool,
-    target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel, config: DictConfig
+    target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel | None, config: DictConfig
 ) -> AttackData:
     """
     Load attack data from target data, shadow data and shadow model.

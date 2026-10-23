@@ -14,6 +14,8 @@ from sralt.utils import DataLoader, head_tail_split, compute_attack_metrics, mod
 
 
 class TailProxyAttack(AttackModel):
+    recommendation_dim = 3
+
     def __init__(self, user_feature_dim, num_quantizers=8, rvq_enabled=True,
                  normalize_features=True, code_matching=True, idf_pair_signal=True,
                  sparse_training=True, sparse_probability=.5, hidden_dim=128, dropout=.2):
@@ -27,7 +29,7 @@ class TailProxyAttack(AttackModel):
             raise ValueError('sparse_probability must be in [0, 1].')
         if user_feature_dim % 4:
             raise ValueError('TailProxyAttack requires four equally sized continuous blocks.')
-        semantic_dim = (num_quantizers if code_matching and rvq_enabled else 0) + (3 if idf_pair_signal else 0)
+        semantic_dim = (num_quantizers if code_matching and rvq_enabled else 0) + (self.recommendation_dim if idf_pair_signal else 0)
         self.continuous = nn.Sequential(nn.Linear(4 * user_feature_dim, hidden_dim), nn.LeakyReLU(.2))
         self.alignment = nn.Sequential(nn.Linear(semantic_dim, hidden_dim // 2), nn.LeakyReLU(.2)) if semantic_dim else None
         self.classifier = nn.Sequential(
@@ -150,4 +152,15 @@ class TailProxyAttack(AttackModel):
         settings = {key: getattr(self, key) for key in (
             'user_feature_dim', 'num_quantizers', 'rvq_enabled', 'normalize_features', 'code_matching',
             'idf_pair_signal', 'sparse_training', 'sparse_probability', 'hidden_dim', 'dropout')}
-        return f'TailProxyAttack({settings}, fingerprint={model_fingerprint(self)})'
+        return f'{type(self).__name__}({settings}, fingerprint={model_fingerprint(self)})'
+
+
+class TailProxyCountAttack(TailProxyAttack):
+    """Change only the explicit recommendation branch from three signals to count."""
+
+    recommendation_dim = 1
+
+    def recommendation_evidence(self, users, data):
+        recommendations = data.side_features['recommendations']
+        left, right = recommendations[users[0]], recommendations[users[1]]
+        return (left[:, :, None] == right[:, None, :]).any(-1).sum(-1, keepdim=True).float()

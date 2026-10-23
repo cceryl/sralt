@@ -1,0 +1,5 @@
+name: PublicDegreeAttack
+revision: training-public-degree-v1
+attribute:
+  _target_: sralt.attack.model.public_degree.PublicDegreeAttack
+train: {}

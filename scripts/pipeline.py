@@ -63,7 +63,7 @@ def target_stage(
 def shadow_stage(
     seed: int, deterministic: bool, device: torch.device, writer: SummaryWriter, config: DictConfig,
     target_data: TargetData, target_model: TargetModel
-) -> tuple[ShadowData, ShadowModel]:
+) -> tuple[ShadowData, ShadowModel | None]:
     shadow_data = load_shadow_data(
         seed=seed,
         deterministic=deterministic,
@@ -71,6 +71,10 @@ def shadow_stage(
         target_model=target_model,
         config=config.data
     ).to(device)
+
+    if config.model.name == 'None':
+        logging.info('No shadow model: use queried recommendations and public split directly.')
+        return shadow_data, None
 
     shadow_model = load_shadow_model(
         seed=seed,
@@ -107,7 +111,7 @@ def shadow_stage(
 
 def attack_stage(
     seed: int, deterministic: bool, device: torch.device, writer: SummaryWriter, config: DictConfig,
-    target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel
+    target_data: TargetData, shadow_data: ShadowData, shadow_model: ShadowModel | None
 ) -> tuple[AttackData, AttackModel]:
     attack_data = load_attack_data(
         seed=seed,
@@ -203,7 +207,8 @@ def main(config: DictConfig):
     torch.save(shadow_data, output_dir / 'shadow_data.pth')
     torch.save(attack_data, output_dir / 'attack_data.pth')
     torch.save(target_model.state_dict(), output_dir / 'target_model.pth')
-    torch.save(shadow_model.state_dict(), output_dir / 'shadow_model.pth')
+    if shadow_model is not None:
+        torch.save(shadow_model.state_dict(), output_dir / 'shadow_model.pth')
     torch.save(attack_model.state_dict(), output_dir / 'attack_model.pth')
 
     writer.close()

@@ -65,15 +65,19 @@ def run_pipeline(config: DictConfig) -> None:
         logging.info('Released target model before shadow training.')
 
         shadow_data = shadow_data.to(device)
-        shadow_model = load_shadow_model(
-            **common, device=device, writer=writer,
-            config=config.shadow.model, data=shadow_data
-        )
-        values = test_shadow_model(
-            **common, device=device, model=shadow_model,
-            data=shadow_data, config=config.shadow.test
-        )
-        log_recommendation_results('Shadow', config.shadow.test, values, shadow_model)
+        if config.shadow.model.name == 'None':
+            shadow_model = None
+            logging.info('No shadow model: use queried recommendations and public split directly.')
+        else:
+            shadow_model = load_shadow_model(
+                **common, device=device, writer=writer,
+                config=config.shadow.model, data=shadow_data
+            )
+            values = test_shadow_model(
+                **common, device=device, model=shadow_model,
+                data=shadow_data, config=config.shadow.test
+            )
+            log_recommendation_results('Shadow', config.shadow.test, values, shadow_model)
 
         attack_data = load_attack_data(
             **common, target_data=target_data, shadow_data=shadow_data,

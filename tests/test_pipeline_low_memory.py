@@ -118,6 +118,32 @@ class LowMemoryPipelineTests(unittest.TestCase):
                 pipeline.run_pipeline(self.config)
         self.writer.close.assert_called_once_with()
 
+    def test_no_shadow_skips_model_training_and_evaluation(self):
+        self.config.shadow.model.name = 'None'
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(pipeline, 'instantiate', new=self.instantiate))
+            for name in ['load_target_data', 'load_target_model', 'load_shadow_data', 'load_attack_model']:
+                stack.enter_context(patch.object(pipeline, name, return_value=Resource()))
+            data = stack.enter_context(patch.object(pipeline, 'load_attack_data', return_value=Resource()))
+            shadow = stack.enter_context(patch.object(pipeline, 'load_shadow_model'))
+            evaluate_shadow = stack.enter_context(patch.object(pipeline, 'test_shadow_model'))
+            stack.enter_context(patch.object(pipeline, 'test_target_model', return_value=[.5]))
+            stack.enter_context(patch.object(pipeline, 'test_attack_model', return_value=[[.5]] * 3))
+            pipeline.run_pipeline(self.config)
+            shadow.assert_not_called()
+            evaluate_shadow.assert_not_called()
+            self.assertIsNone(data.call_args.kwargs['shadow_model'])
+        # The regular pipeline must bypass the same stage.
+        from scripts.pipeline import shadow_stage
+        with patch('scripts.pipeline.load_shadow_data', return_value=Resource()), \
+                patch('scripts.pipeline.load_shadow_model') as shadow, \
+                patch('scripts.pipeline.test_shadow_model') as evaluate_shadow:
+            _, model = shadow_stage(42, False, torch.device('cpu'), self.writer,
+                                    self.config.shadow, Resource(), Resource())
+            self.assertIsNone(model)
+            shadow.assert_not_called()
+            evaluate_shadow.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

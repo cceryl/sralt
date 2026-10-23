@@ -17,9 +17,11 @@ from torchmetrics.classification import BinaryAUROC, BinaryRecall
 from sralt.shadow.data import ShadowData
 from sralt.shadow.model import load_shadow_model
 from sralt.shadow.model.tail_proxy import TailProxyShadow
-from sralt.attack.data import AttackData, load_attack_data
+from sralt.attack.data import AttackData, load_attack_data, EvalAttackDataset
 from sralt.attack.model import load_attack_model, test_attack_model as evaluate_attack
-from sralt.attack.model.tail_proxy import TailProxyAttack
+from sralt.attack.model.tail_proxy import TailProxyAttack, TailProxyCountAttack
+from sralt.attack.model.rec_only import RecOnlyAttack
+from sralt.attack.model.public_degree import PublicDegreeAttack
 from sralt.attack.report import save_attack_report
 from sralt.target.data import TargetData
 from sralt.target.model.lightgcn import LightGCN
@@ -269,6 +271,88 @@ class TailProxyTests(unittest.TestCase):
         self.assertEqual(report['non_isolated_Tail']['samples'], 2)
         self.assertIsNone(report['HT']['AUROC'])
         self.assertAlmostEqual(report['All']['predicted_positive_rate'], 2 / 3)
+
+    def test_count_branch_reads_no_idf_and_default_full_is_unchanged(self):
+        target, shadow = datasets()
+        data = AttackData(target, shadow, self.initialized_shadow(shadow), .25)
+        model = TailProxyCountAttack(16, num_quantizers=2, hidden_dim=16, dropout=0.).eval()
+        edges = data.train_social_edge_index
+        evidence = model.recommendation_evidence(edges, data)
+        expected = [len(set(data.side_features['recommendations'][u].tolist()) &
+                        set(data.side_features['recommendations'][v].tolist())) for u, v in edges.T]
+        torch.testing.assert_close(evidence[:, 0], torch.tensor(expected).float())
+        self.assertEqual(model.alignment[0].in_features, 3)  # two codes + one count
+        before = model(edges, data)
+        del data.side_features['idf']
+        torch.testing.assert_close(before, model(edges, data))
+        torch.testing.assert_close(before, model(edges.flip(0), data))
+        before.sum().backward()
+        self.assertGreater(model.alignment[0].weight.grad.abs().sum(), 0)
+        clone = TailProxyCountAttack(16, num_quantizers=2, hidden_dim=16, dropout=0.).eval()
+        clone.load_state_dict(model.state_dict(), strict=True)
+        torch.testing.assert_close(before, clone(edges, data))
+        self.assertEqual(TailProxyAttack(16, num_quantizers=2).alignment[0].in_features, 5)
+
+    def test_no_shadow_payload_rec_training_and_degree_calibration(self):
+        target, shadow = datasets()
+        data = AttackData(target, shadow, None, .25)
+        self.assertEqual(data.user_features.dtype, torch.long)
+        self.assertEqual(data.user_features.shape, (12, 4))
+        self.assertFalse(hasattr(data, 'side_features'))
+        for user in range(12):
+            edges = shadow.behavioral_edge_index
+            self.assertEqual(set(data.user_features[user].tolist()),
+                             set((edges[1, edges[0] == user] - 12).tolist()))
+        with initialize_config_module(config_module='sralt.configs', version_base=None):
+            cfg = compose(config_name='config', overrides=[
+                'target/data=ciao', 'target/model=design', 'shadow/model=none', 'attack/model=rec_only'])
+        cfg.attack.model.train.num_epochs = 2
+        cfg.attack.model.train.train_batch_size = 8
+        rec = RecOnlyAttack(4).eval()
+        pairs = data.train_social_edge_index
+        # Only overlap count reaches the lightweight classifier.
+        with patch.object(rec.net, 'forward', wraps=rec.net.forward) as forward:
+            rec(pairs, data.user_features)
+            expected = [len(set(data.user_features[u].tolist()) & set(data.user_features[v].tolist()))
+                        for u, v in pairs.T]
+            torch.testing.assert_close(forward.call_args.args[0][:, 0], torch.tensor(expected).float())
+        torch.testing.assert_close(rec(pairs, data.user_features), rec(pairs.flip(0), data.user_features))
+        rec.train_model(data=data, tail_ratio=.5, writer=None, **cfg.attack.model.train)
+        clone = RecOnlyAttack(4)
+        clone.load_state_dict(rec.state_dict(), strict=True)
+        torch.testing.assert_close(rec.predict(pairs, data.user_features), clone.predict(pairs, data.user_features))
+
+        degree = PublicDegreeAttack(4)
+        degrees = torch.bincount(data.shadow_social_edge_index[0], minlength=12).double()
+        torch.testing.assert_close(degree.score(pairs, data), degrees[pairs].log1p().sum(0))
+        changed = copy.deepcopy(data)
+        changed.public_social_edge_index = data.public_social_edge_index[:, :0]
+        changed.target_social_edge_index = data.target_social_edge_index[:, :0]
+        changed.user_features = torch.zeros_like(data.user_features)
+        torch.testing.assert_close(degree.score(pairs, data), degree.score(pairs, changed))
+        set_seed(48, deterministic=True)
+        validation = EvalAttackDataset(data, 'val')
+        set_seed(48, deterministic=True)
+        degree.train_model(data=data, tail_ratio=.5, writer=None)
+        scores = degree.score(validation.edge_index, data)
+        y = validation.labels
+        possible = [(2 * y[scores >= t].sum() / ((scores >= t).sum() + y.sum())).item()
+                    for t in scores.unique()]
+        predicted = degree.predict(validation.edge_index, data) > .5
+        actual = (2 * y[predicted].sum() / (predicted.sum() + y.sum())).item()
+        self.assertAlmostEqual(actual, max(possible))
+        restored = PublicDegreeAttack(4)
+        restored.load_state_dict(degree.state_dict(), strict=True)
+        torch.testing.assert_close(degree.predict(pairs, data), restored.predict(pairs, data))
+        self.assertEqual(sum(p.numel() for p in degree.parameters()), 0)
+        for attack in (rec, degree):
+            result = evaluate_attack(42, True, torch.device('cpu'), attack, data, cfg.attack.test, .5)
+            self.assertTrue(all(torch.isfinite(torch.tensor(group)).all() for group in result))
+            self.assertIn('isolated_Tail', data.subgroup_metrics)
+        with tempfile.TemporaryDirectory() as directory:
+            save_attack_report(data, degree, directory)
+            report = json.loads(Path(directory, 'attack_diagnostics.json').read_text())
+            self.assertEqual(report['statistical']['threshold'], float(degree.threshold))
 
 
 if __name__ == '__main__':
