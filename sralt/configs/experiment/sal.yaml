@@ -1,5 +1,6 @@
 # @package _global_
-# DESIGN only. Each defense setting retrains the black-box SMIA attack.
+# DESIGN only. SAL uses dataset-specific defaults (Epinions/Yelp provisional).
+# Each changed recommendation output gets its own black-box SMIA attack.
 hydra:
   sweeper:
     params:

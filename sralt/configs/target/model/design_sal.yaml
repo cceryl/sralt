@@ -1,6 +1,8 @@
 defaults:
   - design
   - _self_
+  # Apply literal dataset defaults last, preserving existing model cache keys.
+  - sal_weights@attribute.defense: ${target/data}
 
 name: DESIGN_SAL
 revision: sal-isolated-v2

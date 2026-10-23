@@ -1,4 +1,5 @@
 defaults:
-  - data: "???"
   - model: "???"
+  # Hydra resolves later choices first; SAL model defaults depend on target/data.
+  - data: "???"
   - test: default

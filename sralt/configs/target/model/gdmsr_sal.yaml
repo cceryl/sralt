@@ -1,0 +1,23 @@
+defaults:
+  - gdmsr
+  - _self_
+
+name: GDMSR_SAL
+revision: sal-isolated-v1
+
+attribute:
+  _target_: sralt.target.model.gdmsr.DefendedGDMSR
+  _recursive_: False
+  defense:
+    _target_: sralt.target.defense.SocialAdversarialLearning
+    _recursive_: False
+    # Provisional starting point; DESIGN weights are not validated for this target.
+    loss_weight: 0.01
+    sample_ratio: 1.0
+    surrogate_warmup_epochs: 5
+    surrogate_epochs: 3
+    surrogate_batch_size: 256
+    surrogate_grad_clip: 5.0
+    optimizer:
+      _target_: torch.optim.Adam
+      lr: 0.01

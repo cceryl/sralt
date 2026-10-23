@@ -8,8 +8,9 @@ Run from any directory with the project's Python environment (inside Apptainer):
     python scripts/comparison_report.py --target-metrics --shadow-metrics
     python scripts/comparison_report.py --allow-training
 
-Only this script reads/writes .cache/comparison_report. Model/data caches continue
-to use the existing loaders. A metrics hit bypasses all model imports and loading.
+Metric records in .cache/comparison_report are shared with reproduce_sal and
+defense_report. Model/data caches use the existing loaders. A metrics hit
+bypasses all model imports and loading.
 """
 
 from __future__ import annotations
@@ -51,8 +52,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pairs", nargs="+", default=[f"{s}:{a}" for s, a in MODEL_PAIRS],
                         help="shadow:attack config pairs, e.g. csa:mlp miner:enminer")
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
-    parser.add_argument("--sal-weights", nargs="+", type=float, default=[0.01],
-                        help="loss weights for target/model=design_sal; other targets are unaffected")
+    parser.add_argument("--sal-weights", nargs="+", type=float,
+                        help="override SAL weights for design_sal/gdmsr_sal/egcl_sal")
     parser.add_argument("--target-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_TARGET_METRICS)
     parser.add_argument("--shadow-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_SHADOW_METRICS)
     parser.add_argument("--allow-training", action=argparse.BooleanOptionalAction, default=ALLOW_TRAINING,
@@ -254,13 +255,14 @@ def collect(args: argparse.Namespace) -> dict:
     stages = ["attack"] + (["target"] if args.target_metrics else []) + (["shadow"] if args.shadow_metrics else [])
     combinations = [(*case, weight)
                     for case in itertools.product(args.datasets, args.targets, args.pairs, args.seeds)
-                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] == 'design_sal' else [None])]
+                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] in {'design_sal', 'gdmsr_sal', 'egcl_sal'} and args.sal_weights else [None])]
     for index, (dataset, target, pair, seed, sal_weight) in enumerate(combinations, 1):
         shadow, attack = pair.split(":")
         config = compose_case(dataset, target, shadow, attack, seed)
         if sal_weight is not None:
             config.target.model.attribute.defense.loss_weight = sal_weight
-        defense = f'SAL λ={sal_weight:g}' if sal_weight is not None else 'None'
+        selected_weight = float(config.target.model.attribute.defense.loss_weight) if target in {'design_sal', 'gdmsr_sal', 'egcl_sal'} else None
+        defense = f'SAL λ={selected_weight:g}' if selected_weight is not None else 'None'
         identities = {stage: cache_identity(config, stage, sources) for stage in stages}
         records, status = {}, {}
         refresh = args.refresh_metrics or os.environ.get("SRALT_CACHE_REFRESH") == "1"
@@ -281,7 +283,7 @@ def collect(args: argparse.Namespace) -> dict:
             status = {stage: "computed" if value == "missing" and records[stage] is not None else value
                       for stage, value in status.items()}
             logging.info("Results: %s", status)
-        rows.append(dict(dataset=dataset, target='design' if target == 'design_sal' else target,
+        rows.append(dict(dataset=dataset, target=target.removesuffix('_sal'),
                          target_config=target, defense=defense, shadow=shadow, attack=attack, seed=seed,
                          tail_ratio=float(config.attack.tail_ratio), status=status, missing_reason=missing_reason,
                          results={stage: record["metrics"] if record else None for stage, record in records.items()},

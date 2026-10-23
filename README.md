@@ -12,7 +12,7 @@ SMIA now follows the authors' row-normalized propagation, regularization and raw
 
 DESIGN follows its original supplementary implementation in PyTorch, including batch edge removal, degree-dependent self weights, independent social/interaction chains, pointwise BCE and mutual distillation. It retains SRALT's shared data, training and evaluation protocol. Its `author-aligned-v1` configuration separates new model caches from the earlier implementation; see the [DESIGN migration notes](docs/archive/target-reproduction/design-reproduction.md).
 
-SAL (Socially Adversarial Learning) is available through `target/model=design_sal`, which selects the separate `DefendedDESIGN` subclass. The original `DESIGN` class and baseline configuration retain their pre-SAL implementation so existing baseline caches remain reusable. The defense configuration uses `revision: sal-isolated-v2` to separate it from earlier SAL caches. It alternates a surrogate social-relation classifier with target updates that match the means and sample variances of positive/negative predictions. The implementation follows the SMIA release while retaining this project's undirected pairs and evaluation protocol. GDMSR and EGCL are not adapted. See the [SAL reproduction notes](docs/archive/sal-reproduction/sal-reproduction.md).
+SAL (Socially Adversarial Learning) is available through `target/model=design_sal`, which selects the separate `DefendedDESIGN` subclass. The original `DESIGN` class and baseline configuration retain their pre-SAL implementation so existing baseline caches remain reusable. The defense configuration uses `revision: sal-isolated-v2` to separate it from earlier SAL caches. It alternates a surrogate social-relation classifier with target updates that match the means and sample variances of positive/negative predictions. The implementation follows the SMIA release while retaining this project's undirected pairs and evaluation protocol. GDMSR and EGCL are available through `target/model=gdmsr_sal` and `target/model=egcl_sal`, using separate `DefendedGDMSR`/`DefendedEGCL` classes and `sal-isolated-v1` caches. GDMSR applies SAL to its concatenated readout under the current curriculum mask; EGCL adds SAL only to its embedding update, preserving the separate adaptive-weight phase. See the [SAL reproduction notes](docs/archive/sal-reproduction/sal-reproduction.md).
 
 ## Project Structure
 
@@ -76,7 +76,7 @@ To train DESIGN with SAL and evaluate a newly trained black-box SMIA attack:
 python scripts/pipeline_low_memory.py target/data=ciao target/model=design_sal shadow/model=smia attack/model=mlp
 ```
 
-SAL settings live under `target.model.attribute.defense`; the default loss weight is 0.01. The first five epochs delay surrogate fitting while keeping the defense loss active, matching the author's script. Setting `loss_weight=0` skips surrogate initialization, fitting and sampling, and reproduces the no-defense computation and random sequence.
+SAL settings live under `target.model.attribute.defense`. For DESIGN, dataset defaults are selected from `sralt/configs/target/model/sal_weights/`: Ciao **0.05**, Flickr **0.1**, Epinions/Yelp **0.01**. The first two have five-seed evidence; Epinions/Yelp retain an **unvalidated starting point** until their scans are completed. The first five epochs delay surrogate fitting while keeping the defense loss active, matching the author's script. Setting `loss_weight=0` skips surrogate initialization, fitting and sampling, and reproduces the no-defense computation and random sequence.
 
 Run paired experiments inside the project's aux-server Apptainer environment:
 
@@ -86,15 +86,41 @@ python scripts/reproduce_sal.py --phase scan
 python scripts/reproduce_sal.py --phase formal
 ```
 
-The phases cover Ciao/seed42 (2 cases), Ciao+Flickr/seed42 with six loss weights (14 cases including baselines), and four datasets/seeds42–46 at weight 0.01 (40 cases). Use `--dry-run` to inspect the plan, or `--datasets`, `--seeds`, `--weights` to override it. Each completed case updates `runs/sal/<phase>.json` and an offline HTML report, including per-seed paired relative losses, elapsed time and peak CUDA memory. Re-running reuses model/metric caches. These commands describe experiment scope, not completed numerical results.
+The phases cover Ciao/seed42 (2 cases), Ciao+Flickr/seed42 with six loss weights (14 cases including baselines), and four datasets/seeds42–46 with the dataset defaults above (40 cases). Minimal retains its original explicit weight 0.01; scan retains its six-weight grid. Use `--dry-run` to inspect the plan, or `--datasets`, `--seeds`, `--weights` to override it. Each completed case updates `runs/sal/<phase>.json` and an offline HTML report, including per-seed paired relative losses, elapsed time and peak CUDA memory. Re-running reuses model/metric caches. These commands describe experiment scope, not completed numerical results.
 
-To report existing defense results without training:
+GDMSR/EGCL use a provisional λ=0.01 for all datasets; DESIGN's tuned weights do not establish their effectiveness. Select either adapter in either pipeline, or run paired baseline/SAL experiments with `--target`:
 
 ```bash
-python scripts/comparison_report.py --datasets ciao flickr --targets design design_sal --pairs smia:mlp --sal-weights .01 .02 .05 .1 .2 .3 --output runs/sal/comparison.html
+python scripts/pipeline_low_memory.py target/data=ciao target/model=gdmsr_sal shadow/model=smia attack/model=mlp
+python scripts/pipeline_low_memory.py target/data=ciao target/model=egcl_sal shadow/model=smia attack/model=mlp
+python scripts/reproduce_sal.py --target gdmsr --phase minimal --output runs/sal/gdmsr
+python scripts/reproduce_sal.py --target egcl --phase minimal --output runs/sal/egcl
 ```
 
-The report separates defense settings and compares each SAL seed with its matching no-defense run. `python scripts/pipeline_low_memory.py -m experiment=sal` is also available for the 40-case default training sweep.
+Both adapters preserve the baseline training and random sequence when `loss_weight=0`. Local synthetic CPU checks cover training, gradients, checkpoint restoration, and both pipelines; real-data defense results remain unvalidated. See the [adapter notes](docs/on-going/sal-reproduction/gdmsr-egcl-implementation.md).
+
+Run each complete DESIGN/SAL pair across seeds42–46 (inside aux-server Apptainer):
+
+```bash
+python scripts/reproduce_sal.py --phase formal --datasets ciao --seeds 42 43 44 45 46 --output runs/sal/ciao_l005
+python scripts/reproduce_sal.py --phase formal --datasets flickr --seeds 42 43 44 45 46 --output runs/sal/flickr_l01
+python scripts/reproduce_sal.py --phase formal --datasets epinions --seeds 42 43 44 45 46 --output runs/sal/epinions_l001
+python scripts/reproduce_sal.py --phase formal --datasets yelp --seeds 42 43 44 45 46 --output runs/sal/yelp_l001
+```
+
+Each command covers ten cases: baseline and SAL for each seed. Epinions/Yelp commands use provisional weights; scan them first when selecting tuned settings. Add `--weights VALUE` to override the dataset default, or `--dry-run` to inspect cases. The selected literal model configurations preserve the existing Ciao/Flickr training cache keys. Source changes may require metric re-evaluation while retaining trained model caches. `python scripts/pipeline_low_memory.py -m experiment=sal` also runs the forty-case default sweep.
+
+Build a dedicated defense report from existing JSON metric caches:
+
+```bash
+python scripts/defense_report.py
+python scripts/defense_report.py --targets design --datasets ciao flickr
+python scripts/defense_report.py --evaluate-missing
+```
+
+The default report, `runs/defense.html` plus `runs/defense.json`, loads no models and uses no GPU. It includes dataset/model/weight/seed filters, All/Head/Tail metrics, paired mean ± sample SD, per-seed views, CSV/JSON export, and a privacy–utility plot. It includes the GDMSR/EGCL SAL adapters and marks their settings as **provisional**. Missing trained results remain missing.
+
+The report matches current selected configuration values and namespace to recorded metric identities. Within each comparison it selects a single source/data cohort by complete paired coverage and then recency, never pooling different revisions. Recorded source fingerprints and metric-file paths remain visible. These are historical results matching the configuration, not evidence that the current source was re-evaluated. `--source FINGERPRINT` restricts the cohort. `--weights` compares explicit alternatives. Missing or zero-denominator metrics do not count as valid percentage pairs. `--evaluate-missing` explicitly tests existing trained caches via shared loaders and **never trains**; unavailable models remain missing. The general `comparison_report.py` remains available for attack comparisons and now also respects dataset defaults when `--sal-weights` is omitted.
 
 All modifiable parameters are listed in the configuration files under `sralt/configs`. You can override any parameter by specifying its path and value on the command line. For example, to change the number of quantizers in the CSA shadow model, you can use the following command:
 
