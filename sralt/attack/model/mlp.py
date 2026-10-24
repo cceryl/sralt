@@ -19,28 +19,33 @@ class MLP(AttackModel):
     MLP-based classifier for social connection attack.
     """
 
-    def __init__(self, user_feature_dim: int, dropout: float, leaky_relu_slope: float, pos_weight: float):
+    def __init__(self, user_feature_dim: int, dropout: float, leaky_relu_slope: float, pos_weight: float,
+                 norm: str = 'none'):
         """
         :param user_feature_dim: Dimension of user features.
         :param dropout: Dropout rate.
         :param leaky_relu_slope: Slope for LeakyReLU activation.
         :param pos_weight: Positive class weight for BCE loss.
+        :param norm: Optional hidden-layer normalization ('none' or 'layer').
         """
         super().__init__(user_feature_dim)
         self.dropout = dropout
         self.leaky_relu_slope = leaky_relu_slope
         self.pos_weight = pos_weight
+        if norm not in {'none', 'layer'}:
+            raise ValueError(f'Unknown MLP normalization: {norm}')
+        self.norm = norm
 
         self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
-        self.net = nn.Sequential(
-            nn.Linear(4 * user_feature_dim, 4 * user_feature_dim),
-            nn.LeakyReLU(leaky_relu_slope),
-            nn.Dropout(dropout),
-            nn.Linear(4 * user_feature_dim, 2 * user_feature_dim),
-            nn.LeakyReLU(leaky_relu_slope),
-            nn.Dropout(dropout),
-            nn.Linear(2 * user_feature_dim, 1)
-        )
+        layers = []
+        for input_dim, hidden_dim in [(4 * user_feature_dim, 4 * user_feature_dim),
+                                      (4 * user_feature_dim, 2 * user_feature_dim)]:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            if norm == 'layer':
+                layers.append(nn.LayerNorm(hidden_dim))
+            layers.extend([nn.LeakyReLU(leaky_relu_slope), nn.Dropout(dropout)])
+        layers.append(nn.Linear(2 * user_feature_dim, 1))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, user_edge_index: torch.Tensor, user_features: torch.Tensor) -> torch.Tensor:
         """
@@ -153,6 +158,10 @@ class MLP(AttackModel):
                 break
 
         early_stopping.load_best_state()
+        # Small metadata travels with the shared model cache, including on hits.
+        self.training_summary = {'best_epoch': early_stopping.best_epoch,
+                                 'stop_epoch': early_stopping.epoch,
+                                 'selection_score': early_stopping.best_metric}
 
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
     def train_model(
@@ -231,11 +240,12 @@ class MLP(AttackModel):
         """
         String representation and fingerprint of the attack model.
         """
+        normalization = f'norm={self.norm}, ' if getattr(self, 'norm', 'none') != 'none' else ''
         return (
             f'{self.__class__.__name__}('
             f'user_feature_dim={self.user_feature_dim}, '
             f'dropout={self.dropout}, '
             f'leaky_relu_slope={self.leaky_relu_slope}, '
-            f'pos_weight={self.pos_weight}, '
+            f'pos_weight={self.pos_weight}, {normalization}'
             f'fingerprint={model_fingerprint(self)})'
         )
