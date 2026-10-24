@@ -53,7 +53,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="shadow:attack config pairs, e.g. csa:mlp miner:enminer")
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
     parser.add_argument("--sal-weights", nargs="+", type=float,
-                        help="override SAL weights for design_sal/gdmsr_sal/egcl_sal")
+                        help="override SAL weights for design_sal/design_smia_sal/gdmsr_sal/egcl_sal")
     parser.add_argument("--target-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_TARGET_METRICS)
     parser.add_argument("--shadow-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_SHADOW_METRICS)
     parser.add_argument("--allow-training", action=argparse.BooleanOptionalAction, default=ALLOW_TRAINING,
@@ -255,13 +255,13 @@ def collect(args: argparse.Namespace) -> dict:
     stages = ["attack"] + (["target"] if args.target_metrics else []) + (["shadow"] if args.shadow_metrics else [])
     combinations = [(*case, weight)
                     for case in itertools.product(args.datasets, args.targets, args.pairs, args.seeds)
-                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] in {'design_sal', 'gdmsr_sal', 'egcl_sal'} and args.sal_weights else [None])]
+                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] in {'design_sal', 'design_smia_sal', 'gdmsr_sal', 'egcl_sal'} and args.sal_weights else [None])]
     for index, (dataset, target, pair, seed, sal_weight) in enumerate(combinations, 1):
         shadow, attack = pair.split(":")
         config = compose_case(dataset, target, shadow, attack, seed)
         if sal_weight is not None:
             config.target.model.attribute.defense.loss_weight = sal_weight
-        selected_weight = float(config.target.model.attribute.defense.loss_weight) if target in {'design_sal', 'gdmsr_sal', 'egcl_sal'} else None
+        selected_weight = float(config.target.model.attribute.defense.loss_weight) if target in {'design_sal', 'design_smia_sal', 'gdmsr_sal', 'egcl_sal'} else None
         defense = f'SAL λ={selected_weight:g}' if selected_weight is not None else 'None'
         identities = {stage: cache_identity(config, stage, sources) for stage in stages}
         records, status = {}, {}

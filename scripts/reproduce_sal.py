@@ -31,7 +31,7 @@ from scripts import comparison_report as report
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=['minimal', 'scan', 'formal'], default='minimal')
-    parser.add_argument('--target', choices=['design', 'gdmsr', 'egcl'], default='design')
+    parser.add_argument('--target', choices=['design', 'design_smia', 'gdmsr', 'egcl'], default='design')
     parser.add_argument('--datasets', nargs='+')
     parser.add_argument('--seeds', nargs='+', type=int)
     parser.add_argument('--weights', nargs='+', type=float)

@@ -1,0 +1,13 @@
+{
+  "captured_date": "2026-10-24",
+  "source_host": "xh-server",
+  "source_directory": "/home/wanlinglong/dev/SMIA/SocialPP/DESIGN22",
+  "full_source_root": "/home/wanlinglong/dev/SMIA/SocialPP",
+  "source_note": "User-provided complete original source; prefer this over the partial public GitHub repository. No remote source files modified. Snapshot SHA-256 identifies exact bytes, not a verified upstream commit.",
+  "sha256": {
+    "models.py": "6493b4690b48d7d7f791b2895c55dc3da1c6ba1c1bc72685c58178662cab8f30",
+    "layers.py": "a67769539113eb5cecb2cbc3b834fbcc7b7a986e186360feadf940ca01b08da1",
+    "utils.py": "78f62b30d276e3b19f38bbe78ad384df3f7b0d89574c6471ec4f37a704a78bbe",
+    "attacker.py": "ff4c1ee1cc466063613f8ef65b79a45ed32078453accc585184e8cf6ae43d63a"
+  }
+}

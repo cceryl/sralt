@@ -1,0 +1,31 @@
+# SocialPP/DESIGN22 arg_parser.py + main.py. Separate from supplementary DESIGN.
+name: DESIGN_SMIA
+revision: socialpp-design22-v1
+
+attribute:
+  _target_: sralt.target.model.smia_design.SMIADESIGN
+  embed_dim: 64
+  hop: 2
+  decay: 0.001
+  kl_reg: 0.0
+
+train:
+  train_batch_size: 1024
+  val_batch_size: 2048
+  val_num_negatives: 999
+  num_epochs: 200
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.001
+  # User confirmed SRALT's validation objective; source instead uses HR@5+HR@10.
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    # Source stops when counter > stopping_step=10, i.e. at 11 bad epochs.
+    patience: 11
+    greater_is_better: True
+    epsilon: 0.0
