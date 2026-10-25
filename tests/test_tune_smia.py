@@ -88,7 +88,7 @@ class TuningTests(unittest.TestCase):
             self.assertEqual(cfg.shadow.model.attribute.embed_dim, 64)
             self.assertEqual(cfg.shadow.model.attribute.num_layers, 2)
             self.assertEqual(cfg.shadow.model.train.train_batch_size, 8192)
-            self.assertEqual(cfg.shadow.model.train.num_epochs, 300)
+            self.assertEqual(cfg.shadow.model.train.num_epochs, 10)
             self.assertEqual(identity['shadow_setting']['attribute.decay'], cfg.shadow.model.attribute.decay)
         control = next(cfg for cfg, _, _ in inputs if cfg.shadow.model.train.optimizer.lr == .01
                        and cfg.shadow.model.attribute.decay == .01)

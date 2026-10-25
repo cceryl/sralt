@@ -1,0 +1,11 @@
+# Controlled stability experiment: same network/optimizer as mlp_stable.
+defaults:
+  - mlp_stable
+  - _self_
+
+name: MLP_BALANCED
+revision: balanced-batches-v1
+
+train:
+  balanced_batches: True
+  logit_diagnostics: True

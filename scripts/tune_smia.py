@@ -40,6 +40,10 @@ def arguments(argv=None):
     p.add_argument('--dropouts', nargs='+', type=float, default=[.5])
     p.add_argument('--pos-weights', nargs='+', type=float, default=[1.],
                    help='BCE positive weights; >1 changes the recall/precision tradeoff')
+    p.add_argument('--balanced-batches', action=argparse.BooleanOptionalAction, default=False,
+                   help='Keep equal training classes in each MLP batch, including the tail')
+    p.add_argument('--logit-diagnostics', action=argparse.BooleanOptionalAction, default=False,
+                   help='Record fixed-validation score drift without extra predictions')
     p.add_argument('--baseline', action=argparse.BooleanOptionalAction, default=True,
                    help='Include original 50-epoch MLP control in attack mode')
     p.add_argument('--epochs', type=int, default=150)
@@ -110,6 +114,10 @@ def settings(args):
             setting['dropout'] = dropout
         if pos_weight != 1.:
             setting['pos_weight'] = pos_weight
+        if args.balanced_batches:
+            setting['balanced_batches'] = True
+        if args.logit_diagnostics:
+            setting['logit_diagnostics'] = True
         yield setting
 
 
@@ -213,6 +221,9 @@ def attack_config(cfg, setting, selection):
         config.attribute.dropout = setting['dropout']
     if 'pos_weight' in setting:
         config.attribute.pos_weight = setting['pos_weight']
+    for name in ('balanced_batches', 'logit_diagnostics'):
+        if setting.get(name, False):
+            OmegaConf.update(config.train, name, True, force_add=True)
     if selection == 'auc-f1':
         config.train.metrics = config.train.metrics[:2]
     return config
@@ -265,6 +276,7 @@ def train_trial(data, cfg, setting, folder, device, selection):
               'elapsed_seconds': time.monotonic() - start, 'validation_pairs': val_fingerprint,
               'validation': validation_metrics, 'model_fingerprint': model_fingerprint(model),
               'shadow_training_summary': getattr(data, 'shadow_training_summary', {}),
+              'training_diagnostics': getattr(model, 'training_diagnostics', []),
               'model_cache_directory': f'.cache/attack/model/{config.name}'}
     del model
     return result
