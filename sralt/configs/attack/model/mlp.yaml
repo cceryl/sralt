@@ -1,5 +1,5 @@
 name: MLP
-revision: legacy-auc-f1-v2
+revision: legacy-auc-f1-balanced-v3
 
 attribute:
   _target_: sralt.attack.model.mlp.MLP

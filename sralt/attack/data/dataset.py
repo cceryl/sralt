@@ -1,7 +1,8 @@
+from collections.abc import Iterator
 from typing import Literal
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torch_geometric.utils import to_undirected, negative_sampling
 
 from .data import AttackData
@@ -83,6 +84,42 @@ class TrainAttackDataset(Dataset):
             f'attack_data={repr(self.attack_data)}, '
             f'negative_ratio={self.negative_ratio})'
         )
+
+
+class BalancedAttackBatchSampler(Sampler[list[int]]):
+    """Use every sample once per epoch, with equal classes in each batch.
+
+    A tail smaller than half the nominal batch size is merged into the
+    preceding batch. Negative edges are still resampled by the dataset once
+    per full traversal, using only training positives for exclusion.
+    """
+
+    def __init__(self, dataset: TrainAttackDataset, batch_size: int):
+        self.num_positive = dataset.pos_edge_index.size(1)
+        if dataset.num_negatives != self.num_positive or batch_size < 2 or batch_size % 2:
+            raise ValueError('Balanced attack batches require 1:1 classes and an even batch size >= 2.')
+
+        half_batch_size = batch_size // 2
+        full, remainder = divmod(self.num_positive, half_batch_size)
+        self.positive_batch_sizes = [half_batch_size] * full
+        if remainder:
+            if self.positive_batch_sizes and 2 * remainder < half_batch_size:
+                self.positive_batch_sizes[-1] += remainder
+            else:
+                self.positive_batch_sizes.append(remainder)
+
+    def __len__(self) -> int:
+        return len(self.positive_batch_sizes)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        positives = torch.randperm(self.num_positive).tolist()
+        negatives = (torch.randperm(self.num_positive) + self.num_positive).tolist()
+        start = 0
+        for size in self.positive_batch_sizes:
+            batch = positives[start:start + size] + negatives[start:start + size]
+            start += size
+            order = torch.randperm(len(batch)).tolist()
+            yield [batch[index] for index in order]
 
 
 class EvalAttackDataset(Dataset):

@@ -1,7 +1,10 @@
 """Run the SRALT pipeline with prompt model disposal and no run checkpoints."""
 
 import gc
+import json
 import logging
+import math
+from pathlib import Path
 
 import hydra
 import torch
@@ -13,6 +16,18 @@ from sralt.target import load_target_data, load_target_model, test_target_model
 from sralt.shadow import load_shadow_data, load_shadow_model, test_shadow_model
 from sralt.attack import load_attack_data, load_attack_model, test_attack_model
 from sralt.attack.report import save_attack_report
+
+
+def metric_values(metrics, values):
+    result = {}
+    for metric, value in zip(metrics, values, strict=True):
+        name = metric._target_.split('.')[-1].removeprefix('Binary').removeprefix('LinkPred')
+        if name == 'TPRatFPR':
+            name = f'TPR@FPR={metric.target_fpr:.0%}'
+        elif 'k' in metric:
+            name = f'{name}@{metric.k}'
+        result[name] = float(value) if math.isfinite(value) else None
+    return result
 
 
 def release_memory(device: torch.device) -> None:
@@ -42,6 +57,7 @@ def run_pipeline(config: DictConfig) -> None:
     device: torch.device = instantiate(config.device)
     writer = instantiate(config.writer)
     common = dict(seed=config.seed, deterministic=config.deterministic)
+    recorded_metrics = {}
 
     try:
         target_data = load_target_data(**common, config=config.target.data).to(device)
@@ -54,6 +70,7 @@ def run_pipeline(config: DictConfig) -> None:
             data=target_data, config=config.target.test
         )
         log_recommendation_results('Target', config.target.test, values, target_model)
+        recorded_metrics['target'] = {'all': metric_values(config.target.test.metrics, values)}
 
         shadow_data = load_shadow_data(
             **common, target_data=target_data, target_model=target_model,
@@ -78,6 +95,7 @@ def run_pipeline(config: DictConfig) -> None:
                 data=shadow_data, config=config.shadow.test
             )
             log_recommendation_results('Shadow', config.shadow.test, values, shadow_model)
+            recorded_metrics['shadow'] = {'all': metric_values(config.shadow.test.metrics, values)}
 
         attack_data = load_attack_data(
             **common, target_data=target_data, shadow_data=shadow_data,
@@ -103,8 +121,22 @@ def run_pipeline(config: DictConfig) -> None:
                 name = metric._target_.split('.')[-1].removeprefix('Binary')
                 logging.info(f'Test {group} {name}: {value:.4f}')
         logging.info(f'Model representation: {attack_model}')
+        recorded_metrics['attack'] = {
+            group: metric_values(config.attack.test.metrics, values)
+            for group, values in zip(('all', 'head', 'tail'), results, strict=True)
+        }
         if HydraConfig.initialized():
-            save_attack_report(attack_data, attack_model, HydraConfig.get().runtime.output_dir)
+            output_dir = Path(HydraConfig.get().runtime.output_dir)
+            save_attack_report(attack_data, attack_model, output_dir)
+            record = {
+                'schema': 1, 'dataset': config.target.data.name.lower(), 'seed': config.seed,
+                'models': {stage: config[stage].model.name for stage in ('target', 'shadow', 'attack')},
+                'revisions': {stage: config[stage].model.get('revision') for stage in ('target', 'shadow', 'attack')},
+                'metrics': recorded_metrics,
+            }
+            temporary = output_dir / 'metrics.json.tmp'
+            temporary.write_text(json.dumps(record, indent=2, allow_nan=False) + '\n')
+            temporary.replace(output_dir / 'metrics.json')
 
         del attack_model, attack_data
         release_memory(device)

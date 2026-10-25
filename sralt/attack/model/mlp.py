@@ -9,7 +9,7 @@ from hydra.utils import instantiate
 from torch.utils.tensorboard import SummaryWriter
 
 from .base import AttackModel
-from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset
+from sralt.attack.data import AttackData, TrainAttackDataset, EvalAttackDataset, BalancedAttackBatchSampler
 from sralt.utils import timer, head_tail_split, model_fingerprint, compute_attack_metrics
 from sralt.utils import DataLoader, EarlyStopping
 
@@ -18,6 +18,7 @@ class MLP(AttackModel):
     """
     Historical SRALT BatchNorm classifier restored from 2026-08-27.
     Relation endpoints are canonicalized before pair-feature construction.
+    Training batches have equal classes, with small tails merged into the preceding batch.
     """
 
     def __init__(self, user_feature_dim: int, dropout: float, leaky_relu_slope: float, pos_weight: float):
@@ -99,7 +100,14 @@ class MLP(AttackModel):
         :param early_stopping: EarlyStopping helper for managing early stopping.
         """
         train_dataset = TrainAttackDataset(data, negative_ratio=negative_ratio)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        batch_sampler = BalancedAttackBatchSampler(train_dataset, train_batch_size)
+        train_loader = DataLoader(train_dataset, batch_sampler=batch_sampler)
+        logging.info(
+            'Balanced attack batches: nominal batch size=%d, steps per epoch=%d, last batch size=%d; '
+            'each sample is used once per epoch.',
+            train_batch_size, len(batch_sampler),
+            2 * batch_sampler.positive_batch_sizes[-1] if len(batch_sampler) else 0,
+        )
         val_dataset = EvalAttackDataset(data, split='val')
         val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 

@@ -1,5 +1,5 @@
 name: RecOnlyAttack
-revision: rec-count-only-v1
+revision: rec-count-balanced-tail-v2
 attribute:
   _target_: sralt.attack.model.rec_only.RecOnlyAttack
   hidden_dim: 16
