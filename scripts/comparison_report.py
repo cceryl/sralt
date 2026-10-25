@@ -8,9 +8,8 @@ Run from any directory with the project's Python environment (inside Apptainer):
     python scripts/comparison_report.py --target-metrics --shadow-metrics
     python scripts/comparison_report.py --allow-training
 
-Metric records in .cache/comparison_report are shared with reproduce_sal and
-defense_report. Model/data caches use the existing loaders. A metrics hit
-bypasses all model imports and loading.
+Metric records are stored in .cache/comparison_report. Model/data caches use
+the existing loaders. A metrics hit bypasses all model imports and loading.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="shadow:attack config pairs, e.g. csa:mlp miner:enminer")
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
     parser.add_argument("--sal-weights", nargs="+", type=float,
-                        help="override SAL weights for design_sal/design_smia_sal/gdmsr_sal/egcl_sal")
+                        help="override SAL weights for gdmsr_sal/egcl_sal")
     parser.add_argument("--target-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_TARGET_METRICS)
     parser.add_argument("--shadow-metrics", action=argparse.BooleanOptionalAction, default=INCLUDE_SHADOW_METRICS)
     parser.add_argument("--allow-training", action=argparse.BooleanOptionalAction, default=ALLOW_TRAINING,
@@ -255,13 +254,13 @@ def collect(args: argparse.Namespace) -> dict:
     stages = ["attack"] + (["target"] if args.target_metrics else []) + (["shadow"] if args.shadow_metrics else [])
     combinations = [(*case, weight)
                     for case in itertools.product(args.datasets, args.targets, args.pairs, args.seeds)
-                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] in {'design_sal', 'design_smia_sal', 'gdmsr_sal', 'egcl_sal'} and args.sal_weights else [None])]
+                    for weight in (list(dict.fromkeys(args.sal_weights)) if case[1] in {'gdmsr_sal', 'egcl_sal'} and args.sal_weights else [None])]
     for index, (dataset, target, pair, seed, sal_weight) in enumerate(combinations, 1):
         shadow, attack = pair.split(":")
         config = compose_case(dataset, target, shadow, attack, seed)
         if sal_weight is not None:
             config.target.model.attribute.defense.loss_weight = sal_weight
-        selected_weight = float(config.target.model.attribute.defense.loss_weight) if target in {'design_sal', 'design_smia_sal', 'gdmsr_sal', 'egcl_sal'} else None
+        selected_weight = float(config.target.model.attribute.defense.loss_weight) if target in {'gdmsr_sal', 'egcl_sal'} else None
         defense = f'SAL λ={selected_weight:g}' if selected_weight is not None else 'None'
         identities = {stage: cache_identity(config, stage, sources) for stage in stages}
         records, status = {}, {}
@@ -412,7 +411,7 @@ function renderDefense(rows){
   }
   let html='<table><thead><tr>'+['数据集','Target','防御','Shadow / Attack','阶段 / 人群','指标','匹配种子','无防御','SAL','相对下降 (%)'].map(v=>`<th>${v}</th>`).join('')+'</tr></thead><tbody>';
   for(const b of buckets.values())html+='<tr>'+[b.row.dataset,b.row.target,b.row.defense,`${b.row.shadow} / ${b.row.attack}`,`${b.stage} / ${groups[b.group]||b.group}`,b.metric,b.seeds.join(', ')||'缺少配对结果',statisticText(stats(b.base)),statisticText(stats(b.value)),statisticText(stats(b.changes))].map(v=>`<td>${escapeHTML(v)}</td>`).join('')+'</tr>';
-  $('defense-table').innerHTML=buckets.size?html+'</tbody></table>':'<p class="muted">选择 DESIGN 与 DESIGN_SAL 的配对结果以查看防御效果。</p>';
+  $('defense-table').innerHTML=buckets.size?html+'</tbody></table>':'<p class="muted">选择同一目标模型的无防御与 SAL 配对结果以查看防御效果。</p>';
 }
 function render(){const selected=selectedRows(),allRows=aggregate(selected),rows=$('hide-empty').checked?allRows.filter(row=>row.runs.some(run=>run.results.attack!=null)):allRows,cached=selected.filter(r=>r.status.attack==='cached').length,computed=selected.filter(r=>r.status.attack==='computed').length,missing=selected.filter(r=>!r.results.attack).length;
   $('baseline-note').hidden=!$('baseline').value;

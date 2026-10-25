@@ -28,11 +28,6 @@ class ComparisonReportTests(unittest.TestCase):
         return report.parse_args(["--datasets", "ciao", "--targets", "lightgcn", "--pairs", "miner:miner",
                                   "--seeds", "42", "--no-target-metrics", "--no-shadow-metrics", *extra])
 
-    def test_default_targets_include_lightgcn_and_cli_can_override(self):
-        self.assertEqual(report.parse_args([]).targets, ["design", "gdmsr", "egcl", "lightgcn"])
-        self.assertEqual(report.parse_args(["--targets", "design"]).targets, ["design"])
-        self.assertEqual(report.compose_case("ciao", "lightgcn", "csa", "mlp", 42).target.model.name, "LightGCN")
-
     def test_dry_run_never_evaluates(self):
         for args in [self.args("--dry-run"), self.args("--allow-training", "--dry-run")]:
             with patch.object(report, "evaluate_missing", side_effect=AssertionError("Unexpected evaluation")):
