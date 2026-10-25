@@ -1,0 +1,11 @@
+defaults:
+  - smia
+  - _self_
+
+name: SMIA_FIXED
+revision: fixed-budget-v1
+
+train:
+  num_epochs: 10
+  checkpoint_selection: last
+  early_stopping: null

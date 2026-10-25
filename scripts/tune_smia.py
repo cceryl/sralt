@@ -4,6 +4,8 @@
 Default: frozen-shadow MLP sweep (128 trials). --sweep shadow scans SMIA
 lr/decay with a fixed MLP by default. Targets must already be cached; shadow
 training is allowed only in shadow mode. Never evaluates hidden test labels.
+Shadow budget grids and final-epoch selection are optional; LayerNorm and
+positive BCE weights are independently controlled by the attack grid.
 """
 from __future__ import annotations
 
@@ -30,12 +32,14 @@ def arguments(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sweep', choices=['attack', 'shadow'], default='attack')
     p.add_argument('--datasets', nargs='+', choices=['ciao', 'flickr', 'epinions', 'yelp'], default=['ciao', 'flickr'])
-    p.add_argument('--targets', nargs='+', choices=['design', 'gdmsr'], default=['design', 'gdmsr'])
+    p.add_argument('--targets', nargs='+', choices=['design', 'gdmsr', 'design_smia', 'design_smia_sal'], default=['design', 'gdmsr'])
     p.add_argument('--seeds', nargs='+', type=int, default=[42, 43])
     p.add_argument('--lrs', nargs='+', type=float, help='MLP rates; default attack grid or .05 in shadow mode')
     p.add_argument('--batches', nargs='+', type=int, help='MLP batches; default attack grid or 512 in shadow mode')
     p.add_argument('--norms', nargs='+', choices=['none', 'layer'], default=['none'])
     p.add_argument('--dropouts', nargs='+', type=float, default=[.5])
+    p.add_argument('--pos-weights', nargs='+', type=float, default=[1.],
+                   help='BCE positive weights; >1 changes the recall/precision tradeoff')
     p.add_argument('--baseline', action=argparse.BooleanOptionalAction, default=True,
                    help='Include original 50-epoch MLP control in attack mode')
     p.add_argument('--epochs', type=int, default=150)
@@ -46,6 +50,10 @@ def arguments(argv=None):
     p.add_argument('--shadow-embed-dims', nargs='+', type=int)
     p.add_argument('--shadow-layers', nargs='+', type=int)
     p.add_argument('--shadow-epochs', type=int)
+    p.add_argument('--shadow-epoch-grid', nargs='+', type=int,
+                   help='Shadow budget grid; mutually exclusive with --shadow-epochs')
+    p.add_argument('--shadow-checkpoint', choices=['recommendation', 'last'], default='recommendation',
+                   help='Select recommendation-best weights or retain the final fixed-budget epoch')
     p.add_argument('--shadow-patience', type=int)
     p.add_argument('--selection', choices=['original', 'auc-f1'], default='original')
     p.add_argument('--output', type=Path, default=Path('runs/smia_tuning/round2'))
@@ -53,17 +61,23 @@ def arguments(argv=None):
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--prepare-only', action='store_true', help='Prepare shared inputs/shadows without attack training')
     args = p.parse_args(argv)
+    if args.shadow_epochs is not None and args.shadow_epoch_grid is not None:
+        p.error('--shadow-epochs and --shadow-epoch-grid are mutually exclusive')
+    if args.sweep != 'shadow' and (args.shadow_epoch_grid is not None or args.shadow_checkpoint != 'recommendation'):
+        p.error('Shadow budget/selection experiments require --sweep shadow')
+    if args.shadow_checkpoint == 'last' and args.shadow_patience is not None:
+        p.error('--shadow-patience does not apply to final-epoch selection')
     if args.lrs is None:
         args.lrs = [.05] if args.sweep == 'shadow' else [.001, .003, .01, .03, .05]
     if args.batches is None:
         args.batches = [512] if args.sweep == 'shadow' else [256, 512, 1024]
-    for key in ('lrs', 'shadow_lrs'):
+    for key in ('lrs', 'shadow_lrs', 'pos_weights'):
         if any(not 0 < value < float('inf') for value in getattr(args, key)):
             p.error(f'--{key.replace("_", "-")} must contain finite positive values')
     if any(not 0 <= value < float('inf') for value in args.shadow_decays):
         p.error('--shadow-decays must contain finite nonnegative values')
     for key in ('batches', 'shadow_batches', 'shadow_embed_dims', 'shadow_layers', 'epochs',
-                'patience', 'shadow_epochs', 'shadow_patience'):
+                'patience', 'shadow_epochs', 'shadow_epoch_grid', 'shadow_patience'):
         values = getattr(args, key)
         if values is not None and any(value <= 0 for value in (values if isinstance(values, list) else [values])):
             p.error(f'--{key.replace("_", "-")} must be positive')
@@ -85,13 +99,17 @@ def save_json(path, value):
 def settings(args):
     if args.sweep == 'attack' and args.baseline:
         yield {'label': 'baseline', 'lr': .05, 'batch': 512, 'epochs': 50, 'patience': 5}
-    for lr, batch, norm, dropout in itertools.product(args.lrs, args.batches, args.norms, args.dropouts):
+    for lr, batch, norm, dropout, pos_weight in itertools.product(
+        args.lrs, args.batches, args.norms, args.dropouts, args.pos_weights
+    ):
         setting = {'label': 'grid', 'lr': lr, 'batch': batch, 'epochs': args.epochs, 'patience': args.patience}
         # Keep the original no-Norm configuration and cache key unchanged.
         if norm != 'none':
             setting['norm'] = norm
         if dropout != .5:
             setting['dropout'] = dropout
+        if pos_weight != 1.:
+            setting['pos_weight'] = pos_weight
         yield setting
 
 
@@ -102,6 +120,8 @@ def shadow_settings(args):
     fields = {'train.optimizer.lr': args.shadow_lrs, 'attribute.decay': args.shadow_decays,
               'train.train_batch_size': args.shadow_batches, 'attribute.embed_dim': args.shadow_embed_dims,
               'attribute.num_layers': args.shadow_layers}
+    if args.shadow_epoch_grid is not None:
+        fields['train.num_epochs'] = args.shadow_epoch_grid
     fields = {key: values for key, values in fields.items() if values is not None}
     for values in itertools.product(*fields.values()):
         setting = dict(zip(fields, values, strict=True))
@@ -109,6 +129,9 @@ def shadow_settings(args):
             setting['train.num_epochs'] = args.shadow_epochs
         if args.shadow_patience is not None:
             setting['train.early_stopping.patience'] = args.shadow_patience
+        if args.shadow_checkpoint == 'last':
+            setting['train.checkpoint_selection'] = 'last'
+            setting['train.early_stopping'] = None
         yield setting
 
 
@@ -123,7 +146,7 @@ def cases(args):
         for shadow_setting in shadow_settings(args):
             cfg = copy.deepcopy(base)
             for key, value in shadow_setting.items():
-                OmegaConf.update(cfg.shadow.model, key, value)
+                OmegaConf.update(cfg.shadow.model, key, value, force_add=True)
             identity = {'dataset': dataset, 'target': target, 'seed': seed, 'deterministic': cfg.deterministic,
                         'namespace': os.environ.get('SRALT_CACHE_VERSION', 'default'),
                         'target_config': OmegaConf.to_container(cfg.target, resolve=True),
@@ -163,6 +186,7 @@ def freeze_input(cfg, device, folder, allow_shadow_training=False):
             writer.close()
     data = load_attack_data(**common, target_data=td, shadow_data=sd, shadow_model=shadow,
                             config=cfg.attack.data).to(torch.device('cpu'))
+    data.shadow_training_summary = copy.deepcopy(getattr(shadow, 'training_summary', {}))
     del shadow, sd, td
     # Check the public protocol without consulting hidden test labels.
     encode = lambda edges: edges[0] * data.num_users + edges[1]
@@ -187,6 +211,8 @@ def attack_config(cfg, setting, selection):
         OmegaConf.update(config.attribute, 'norm', setting['norm'], force_add=True)
     if 'dropout' in setting:
         config.attribute.dropout = setting['dropout']
+    if 'pos_weight' in setting:
+        config.attribute.pos_weight = setting['pos_weight']
     if selection == 'auc-f1':
         config.train.metrics = config.train.metrics[:2]
     return config
@@ -238,6 +264,7 @@ def train_trial(data, cfg, setting, folder, device, selection):
               'training_summary_available': bool(training),
               'elapsed_seconds': time.monotonic() - start, 'validation_pairs': val_fingerprint,
               'validation': validation_metrics, 'model_fingerprint': model_fingerprint(model),
+              'shadow_training_summary': getattr(data, 'shadow_training_summary', {}),
               'model_cache_directory': f'.cache/attack/model/{config.name}'}
     del model
     return result
@@ -321,7 +348,8 @@ def main(argv=None):
             try:
                 data = freeze_input(cfg, device, input_folder, allow_shadow_training=args.sweep == 'shadow')
                 save_json(input_folder / 'identity.json', {**identity, 'attack_data_repr': repr(data),
-                          'train_positives': data.num_train_social_edges, 'validation_positives': data.num_val_social_edges})
+                          'train_positives': data.num_train_social_edges, 'validation_positives': data.num_val_social_edges,
+                          'shadow_training_summary': getattr(data, 'shadow_training_summary', {})})
                 OmegaConf.save(cfg.shadow.model, input_folder / 'shadow.yaml', resolve=True)
             finally:
                 logging.getLogger().removeHandler(handler)

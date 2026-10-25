@@ -1,5 +1,6 @@
 import typing
 import logging
+import math
 
 import torch
 import torch.nn as nn
@@ -155,7 +156,8 @@ class SMIA(ShadowModel):
     def _train_model(
         self, *, data: ShadowData, writer: SummaryWriter | None,
         train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
-        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping
+        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping | None,
+        checkpoint_selection: str = 'recommendation'
     ):
         """
         Train the SMIA shadow model.
@@ -169,7 +171,11 @@ class SMIA(ShadowModel):
         :param optimizer: Optimizer for training.
         :param metrics: List of link prediction metrics to compute during validation.
         :param early_stopping: EarlyStopping helper for managing early stopping.
+        :param checkpoint_selection: 'recommendation' restores the validation best;
+            'last' trains the full budget and retains the final weights.
         """
+        if checkpoint_selection not in {'recommendation', 'last'}:
+            raise ValueError(f'Unknown SMIA checkpoint selection: {checkpoint_selection}')
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         train_dataset = TrainShadowDataset(data)
@@ -183,6 +189,8 @@ class SMIA(ShadowModel):
             for metric in metrics
         ]
 
+        best_recommendation_score = -float('inf')
+        best_recommendation_epoch = 0
         for epoch in range(1, num_epochs + 1):
             self.train()
 
@@ -224,16 +232,35 @@ class SMIA(ShadowModel):
                 for name, value in zip(metric_names, metric_results):
                     writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
 
-            if early_stopping.step(sum(metric_results)):
-                break
+            score = sum(metric_results)
+            if not math.isfinite(score):
+                raise FloatingPointError(f'SMIA validation metric is not finite: {score}.')
+            if score > best_recommendation_score:
+                best_recommendation_score, best_recommendation_epoch = score, epoch
+            if checkpoint_selection == 'recommendation':
+                if early_stopping.step(score):
+                    break
 
-        early_stopping.load_best_state()
+        if checkpoint_selection == 'recommendation':
+            early_stopping.load_best_state()
+            selected_epoch = early_stopping.best_epoch
+        else:
+            selected_epoch = epoch
+            logging.info('SMIA fixed budget: retain final epoch %d; recommendation metrics are diagnostic only.', epoch)
+        self.training_summary = dict(
+            checkpoint_selection=checkpoint_selection, selected_epoch=selected_epoch,
+            stop_epoch=epoch, num_epochs=num_epochs,
+            optimizer_steps=epoch * len(train_loader),
+            best_recommendation_epoch=best_recommendation_epoch,
+            best_recommendation_score=best_recommendation_score,
+        )
 
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
     def train_model(
         self, *, data: ShadowData, writer: SummaryWriter | None,
         train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
-        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig,
+        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig | None,
+        checkpoint_selection: str = 'recommendation',
         **kwargs
     ):
         """
@@ -248,6 +275,7 @@ class SMIA(ShadowModel):
         :param optimizer: Instantiable optimizer config.
         :param metrics: List of link prediction metric instantiation configs.
         :param early_stopping: Instantiable EarlyStopping helper config.
+        :param checkpoint_selection: Recommendation-best or final-epoch weights.
         """
         if kwargs:
             logging.warning(f'Ignoring unexpected additional training config parameters: {kwargs}')
@@ -261,7 +289,8 @@ class SMIA(ShadowModel):
             num_epochs=num_epochs,
             optimizer=instantiate(optimizer, params=self.parameters()),
             metrics=instantiate(metrics),
-            early_stopping=instantiate(early_stopping, model=self)
+            early_stopping=(instantiate(early_stopping, model=self) if checkpoint_selection == 'recommendation' else None),
+            checkpoint_selection=checkpoint_selection
         )
 
     @torch.no_grad()
