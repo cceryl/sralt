@@ -1,11 +1,11 @@
 name: MLP
-revision: author-aligned-v1
+revision: legacy-restored-v1
 
 attribute:
   _target_: sralt.attack.model.mlp.MLP
   dropout: 0.5
   leaky_relu_slope: 0.2
-  pos_weight: 1.0
+  pos_weight: 10.0
 
 train:
   train_batch_size: 512
@@ -13,11 +13,10 @@ train:
   negative_ratio: 1.0
   num_epochs: 50
   optimizer:
-    _target_: sralt.attack.model.miner.SGDWithGradientClipping
-    lr: 0.05
-    momentum: 0.9
-    weight_decay: 0.0
-    grad_clip_norm: 5.0
+    _target_: sralt.utils.AdamWithGradientClipping
+    lr: 1e-3
+    weight_decay: 1e-4
+    grad_clip_norm: 1.0
   metrics:
     - _target_: torchmetrics.AUROC
       task: binary

@@ -1,5 +1,5 @@
 name: SMIA
-revision: author-aligned-v1
+revision: legacy-restored-v1
 
 attribute:
   _target_: sralt.shadow.model.smia.SMIA
@@ -11,8 +11,7 @@ train:
   train_batch_size: 8192
   val_batch_size: 2048
   val_num_negatives: 999
-  # Default compute budget; retain recommendation-validation checkpoint selection.
-  num_epochs: 10
+  num_epochs: 300
   optimizer:
     _target_: torch.optim.Adam
     lr: 1e-2

@@ -1,16 +1,14 @@
 import typing
 import logging
-import math
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from tqdm import tqdm
 from omegaconf import DictConfig
 from torch.optim import Optimizer
 from hydra.utils import instantiate
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.utils import to_undirected, scatter
+from torch_geometric.nn import LightGCN
+from torch_geometric.utils import to_undirected
 from torch_geometric.metrics.link_pred import LinkPredMetric
 
 from .base import ShadowModel
@@ -19,43 +17,10 @@ from sralt.utils import timer, build_normalized_adj, model_fingerprint, compute_
 from sralt.utils import DataLoader, EarlyStopping
 
 
-class PreferenceGCN(nn.Module):
-    """SMIA author propagation: neighbor means and separate table initialization."""
-
-    def __init__(self, num_users: int, num_items: int, embed_dim: int, num_layers: int, social: bool):
-        super().__init__()
-        self.num_users = num_users
-        self.num_layers = num_layers
-        self.social = social
-        self.embedding = nn.Embedding(num_users + num_items, embed_dim)
-        nn.init.xavier_uniform_(self.embedding.weight[:num_users])
-        nn.init.xavier_uniform_(self.embedding.weight[num_users:])
-
-    def get_embedding(self, graph: torch.Tensor) -> torch.Tensor:
-        embeds = self.embedding.weight[:self.num_users] if self.social else self.embedding.weight
-        layers = [embeds]
-        for _ in range(self.num_layers):
-            if graph.layout == torch.strided:
-                src, dst = graph
-                embeds = scatter(embeds[src], dst, dim=0, dim_size=embeds.size(0), reduce='mean')
-            else:
-                embeds = graph @ embeds
-            layers.append(embeds)
-        embeds = torch.stack(layers).mean(dim=0)
-        if self.social:
-            embeds = torch.cat([embeds, self.embedding.weight[self.num_users:]], dim=0)
-        return embeds
-
-    def forward(self, graph: torch.Tensor, target_edge_index: torch.Tensor) -> torch.Tensor:
-        embeds = self.get_embedding(graph)
-        src, dst = target_edge_index
-        return (embeds[src] * embeds[dst]).sum(dim=-1)
-
-
 class SMIA(ShadowModel):
     """
-    Social relation-level Member Inference Attack shadow model.
-    Paper: 'Social Relation-Level Privacy Risks and Preservation in Social Recommender Systems'.
+    Historical SRALT SMIA shadow adaptation restored from 2026-08-27.
+    Uses symmetric LightGCN propagation and propagated attack features.
     """
 
     def __init__(self, num_users: int, num_items: int, embed_dim: int, num_layers: int, decay: float):
@@ -73,8 +38,8 @@ class SMIA(ShadowModel):
         self.num_layers = num_layers
         self.decay = decay
 
-        self.social_branch = PreferenceGCN(num_users, num_items, embed_dim, num_layers, social=True)
-        self.behavioral_branch = PreferenceGCN(num_users, num_items, embed_dim, num_layers, social=False)
+        self.social_branch = LightGCN(self.num_nodes, embed_dim, num_layers)
+        self.behavioral_branch = LightGCN(self.num_nodes, embed_dim, num_layers)
 
     def _build_adj(self, social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -95,11 +60,11 @@ class SMIA(ShadowModel):
         results = []
         for key, edge_index in [('social', social_edge_index), ('behavioral', behavioral_edge_index)]:
             if self._adj_cache.get(key, {}).get('edge_index') is not edge_index:
-                num_nodes = self.num_users if key == 'social' else self.num_nodes
-                degree = torch.bincount(edge_index[1], minlength=num_nodes).to(
-                    self.social_branch.embedding.weight.dtype)
-                weights = degree.clamp_min(1).reciprocal()[edge_index[1]]
-                adj = build_normalized_adj(edge_index, num_nodes, edge_weight=weights, normalization='none')
+                adj = build_normalized_adj(
+                    edge_index, self.num_nodes,
+                    edge_weight=self.social_branch.embedding.weight.new_ones(edge_index.size(1)),
+                    normalization='none'
+                )
                 self._adj_cache[key] = {'edge_index': edge_index, 'adj': adj}
 
             results.append(self._adj_cache[key]['adj'])
@@ -146,18 +111,22 @@ class SMIA(ShadowModel):
         :param nodes: Node tensor of shape (num_nodes_in_batch,) representing nodes in the current batch.
         :return: The total loss tensor.
         """
-        rank_loss = -F.logsigmoid(pos_scores - neg_scores).mean(dim=1).sum()
-        # Author l2_loss = 0.5 * sum(mean(sampled_table ** 2)) for U/I+/I-.
-        reg_loss = sum(branch.embedding.weight[nodes].square().sum()
-                       for branch in (self.social_branch, self.behavioral_branch))
-        reg_loss = reg_loss / (2 * pos_scores.size(1) * self.embed_dim)
-        return rank_loss + self.decay * reg_loss
+        social_pos_scores, behavioral_pos_scores = pos_scores
+        social_neg_scores, behavioral_neg_scores = neg_scores
+
+        social_loss = self.social_branch.recommendation_loss(
+            social_pos_scores, social_neg_scores, nodes, lambda_reg=self.decay
+        )
+        behavioral_loss = self.behavioral_branch.recommendation_loss(
+            behavioral_pos_scores, behavioral_neg_scores, nodes, lambda_reg=self.decay
+        )
+
+        return social_loss + behavioral_loss
 
     def _train_model(
         self, *, data: ShadowData, writer: SummaryWriter | None,
         train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
-        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping | None,
-        checkpoint_selection: str = 'recommendation'
+        optimizer: Optimizer, metrics: list[LinkPredMetric], early_stopping: EarlyStopping
     ):
         """
         Train the SMIA shadow model.
@@ -171,11 +140,7 @@ class SMIA(ShadowModel):
         :param optimizer: Optimizer for training.
         :param metrics: List of link prediction metrics to compute during validation.
         :param early_stopping: EarlyStopping helper for managing early stopping.
-        :param checkpoint_selection: 'recommendation' restores the validation best;
-            'last' trains the full budget and retains the final weights.
         """
-        if checkpoint_selection not in {'recommendation', 'last'}:
-            raise ValueError(f'Unknown SMIA checkpoint selection: {checkpoint_selection}')
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         train_dataset = TrainShadowDataset(data)
@@ -189,8 +154,6 @@ class SMIA(ShadowModel):
             for metric in metrics
         ]
 
-        best_recommendation_score = -float('inf')
-        best_recommendation_epoch = 0
         for epoch in range(1, num_epochs + 1):
             self.train()
 
@@ -232,35 +195,16 @@ class SMIA(ShadowModel):
                 for name, value in zip(metric_names, metric_results):
                     writer.add_scalar(f'{model_name}/{name}/val', value, epoch)
 
-            score = sum(metric_results)
-            if not math.isfinite(score):
-                raise FloatingPointError(f'SMIA validation metric is not finite: {score}.')
-            if score > best_recommendation_score:
-                best_recommendation_score, best_recommendation_epoch = score, epoch
-            if checkpoint_selection == 'recommendation':
-                if early_stopping.step(score):
-                    break
+            if early_stopping.step(sum(metric_results)):
+                break
 
-        if checkpoint_selection == 'recommendation':
-            early_stopping.load_best_state()
-            selected_epoch = early_stopping.best_epoch
-        else:
-            selected_epoch = epoch
-            logging.info('SMIA fixed budget: retain final epoch %d; recommendation metrics are diagnostic only.', epoch)
-        self.training_summary = dict(
-            checkpoint_selection=checkpoint_selection, selected_epoch=selected_epoch,
-            stop_epoch=epoch, num_epochs=num_epochs,
-            optimizer_steps=epoch * len(train_loader),
-            best_recommendation_epoch=best_recommendation_epoch,
-            best_recommendation_score=best_recommendation_score,
-        )
+        early_stopping.load_best_state()
 
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
     def train_model(
         self, *, data: ShadowData, writer: SummaryWriter | None,
         train_batch_size: int, val_batch_size: int, val_num_negatives: int, num_epochs: int,
-        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig | None,
-        checkpoint_selection: str = 'recommendation',
+        optimizer: DictConfig, metrics: DictConfig, early_stopping: DictConfig,
         **kwargs
     ):
         """
@@ -275,7 +219,6 @@ class SMIA(ShadowModel):
         :param optimizer: Instantiable optimizer config.
         :param metrics: List of link prediction metric instantiation configs.
         :param early_stopping: Instantiable EarlyStopping helper config.
-        :param checkpoint_selection: Recommendation-best or final-epoch weights.
         """
         if kwargs:
             logging.warning(f'Ignoring unexpected additional training config parameters: {kwargs}')
@@ -289,8 +232,7 @@ class SMIA(ShadowModel):
             num_epochs=num_epochs,
             optimizer=instantiate(optimizer, params=self.parameters()),
             metrics=instantiate(metrics),
-            early_stopping=(instantiate(early_stopping, model=self) if checkpoint_selection == 'recommendation' else None),
-            checkpoint_selection=checkpoint_selection
+            early_stopping=instantiate(early_stopping, model=self)
         )
 
     @torch.no_grad()
@@ -335,8 +277,12 @@ class SMIA(ShadowModel):
         """
         self.eval()
 
-        social_embeds = self.social_branch.embedding.weight
-        behavioral_embeds = self.behavioral_branch.embedding.weight
+        social_edge_index = data.social_edge_index
+        behavioral_edge_index = to_undirected(data.behavioral_edge_index)
+        social_adj, behavioral_adj = self._build_adj(social_edge_index, behavioral_edge_index)
+
+        social_embeds = self.social_branch.get_embedding(social_adj)
+        behavioral_embeds = self.behavioral_branch.get_embedding(behavioral_adj)
         social_user_embeds = social_embeds[:self.num_users]
         behavioral_user_embeds = behavioral_embeds[:self.num_users]
 
@@ -351,7 +297,7 @@ class SMIA(ShadowModel):
             user_item_features.append(torch.cat([items_mean, items_var]))
 
         user_item_features = torch.stack(user_item_features)
-        user_features = torch.cat([behavioral_user_embeds, social_user_embeds, user_item_features], dim=1)
+        user_features = torch.cat([social_user_embeds, behavioral_user_embeds, user_item_features], dim=1)
         return user_features
 
     def __repr__(self) -> str:

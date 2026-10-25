@@ -1,13 +1,10 @@
-import copy
 import os
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import torch
-import torch.nn.functional as F
 from hydra import compose, initialize_config_module
-from hydra.utils import instantiate
 from torch_geometric.utils import to_undirected
 
 from scripts.pipeline import shadow_stage, attack_stage
@@ -43,12 +40,6 @@ def data():
     return result
 
 
-def row_mean(edges, n, dtype=torch.float64):
-    adj = torch.zeros(n, n, dtype=dtype)
-    adj[edges[1], edges[0]] = 1
-    return adj / adj.sum(1, keepdim=True).clamp(min=1)
-
-
 def pairs(edges):
     return {tuple(sorted(pair)) for pair in edges.t().tolist()}
 
@@ -60,73 +51,6 @@ class SMIATests(unittest.TestCase):
 
     def tearDown(self):
         torch.use_deterministic_algorithms(self.previous)
-
-    def test_author_row_propagation_raw_social_items_and_gradients(self):
-        social = to_undirected(torch.tensor([[0, 1], [1, 2]]))
-        behavior = to_undirected(torch.tensor([[0, 0, 1, 2], [4, 5, 4, 6]]))
-        for deterministic in (False, True):
-            with self.subTest(deterministic=deterministic):
-                torch.use_deterministic_algorithms(deterministic)
-                model = SMIA(4, 5, 3, 2, .1).double()
-                initial_s = model.social_branch.embedding.weight.detach().clone().requires_grad_()
-                initial_a = model.behavioral_branch.embedding.weight.detach().clone().requires_grad_()
-                s, a = row_mean(social, 4), row_mean(behavior, 9)
-                expected_s = torch.cat([(initial_s[:4] + s @ initial_s[:4] + s @ s @ initial_s[:4]) / 3,
-                                        initial_s[4:]])
-                expected_a = (initial_a + a @ initial_a + a @ a @ initial_a) / 3
-                expected = torch.cat([expected_s, expected_a], dim=1)
-                actual = model.get_embedding(social, behavior)
-                torch.testing.assert_close(actual, expected)
-                torch.testing.assert_close(actual[4:, :3], initial_s[4:])
-                torch.testing.assert_close(actual[3, :3], initial_s[3] / 3)
-                actual.square().sum().backward()
-                expected.square().sum().backward()
-                torch.testing.assert_close(model.social_branch.embedding.weight.grad, initial_s.grad)
-                torch.testing.assert_close(model.behavioral_branch.embedding.weight.grad, initial_a.grad)
-
-    def test_author_loss_scaling_and_separate_initialization(self):
-        model = SMIA(4, 5, 3, 2, .1).double()
-        for branch in (model.social_branch, model.behavioral_branch):
-            self.assertLessEqual(branch.embedding.weight[:4].abs().max(), (6 / (4 + 3)) ** .5)
-            self.assertLessEqual(branch.embedding.weight[4:].abs().max(), (6 / (5 + 3)) ** .5)
-        positive = torch.randn(2, 3, dtype=torch.float64, requires_grad=True)
-        negative = torch.randn(2, 3, dtype=torch.float64, requires_grad=True)
-        nodes = torch.tensor([0, 0, 2, 4, 5, 5, 7, 8, 8])
-        expected = sum(F.softplus(negative[i] - positive[i]).mean() for i in range(2))
-        for branch in (model.social_branch, model.behavioral_branch):
-            expected = expected + .1 * .5 * sum(
-                branch.embedding.weight[chunk].square().mean() for chunk in nodes.chunk(3))
-        actual = model.calculate_loss(positive, negative, nodes)
-        torch.testing.assert_close(actual, expected)
-        params = (positive, negative, *model.parameters())
-        gradients = torch.autograd.grad(actual, params, retain_graph=True)
-        references = torch.autograd.grad(expected, params)
-        for gradient, reference in zip(gradients, references):
-            torch.testing.assert_close(gradient, reference)
-
-    def test_raw_attack_features_use_all_queries_and_preserve_state(self):
-        cfg, target_data = config(), data()
-        cfg.shadow.data.num_recommendations = 4
-        target = LightGCN(12, 20, 4, 1, .001)
-        with tempfile.TemporaryDirectory() as directory:
-            previous = os.getcwd()
-            try:
-                os.chdir(directory)
-                shadow_data = load_shadow_data(42, True, target_data, target, cfg.shadow.data)
-            finally:
-                os.chdir(previous)
-        model = SMIA(12, 20, 4, 2, .01)
-        before = model_fingerprint(model)
-        with patch.object(model.social_branch, 'get_embedding', side_effect=AssertionError('Propagation')):
-            features = model.get_user_features(shadow_data)
-        social, behavior = model.social_branch.embedding.weight, model.behavioral_branch.embedding.weight
-        for user in range(12):
-            items = shadow_data.behavioral_edge_index[1, shadow_data.behavioral_edge_index[0] == user]
-            fused = (social[items] + behavior[items]) / 2
-            expected = torch.cat([behavior[user], social[user], fused.mean(0), fused.var(0)])
-            torch.testing.assert_close(features[user], expected)
-        self.assertFalse(features.requires_grad)
-        self.assertEqual(before, model_fingerprint(model))
 
     def test_split_is_made_once_before_shadow_and_validation_excludes_all_public(self):
         cfg, target_data = config(), data()
@@ -177,39 +101,6 @@ class SMIATests(unittest.TestCase):
                 self.assertNotEqual(repr(first), repr(second))
             finally:
                 os.chdir(previous)
-
-    def test_author_mlp_probabilities_bce_and_clipped_sgd_update(self):
-        cfg = config()
-        model = MLP(8, .5, .2, 1.).double()
-        reference = copy.deepcopy(model)
-        self.assertFalse(any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.net))
-        features = torch.randn(6, 8, dtype=torch.float64)
-        edge = torch.tensor([[0, 2, 1, 4], [1, 1, 3, 5]])
-        u, v = torch.minimum(*edge), torch.maximum(*edge)
-        expected_pair = torch.cat([features[u], features[v], abs(features[u] - features[v]), features[u] * features[v]], 1)
-        labels = torch.tensor([1., 0., 1., 0.], dtype=torch.float64)
-        optimizer = instantiate(cfg.attack.model.train.optimizer, params=model.parameters())
-        baseline = torch.optim.SGD(reference.parameters(), lr=.05, momentum=.9, weight_decay=0.)
-        for _ in range(2):
-            optimizer.zero_grad()
-            baseline.zero_grad()
-            torch.manual_seed(42)
-            loss = model.loss_fn(model(edge, features), labels)
-            torch.manual_seed(42)
-            expected = F.binary_cross_entropy(torch.sigmoid(reference.net(expected_pair).squeeze(1)), labels)
-            torch.testing.assert_close(loss, expected)
-            loss.backward()
-            expected.backward()
-            torch.nn.utils.clip_grad_norm_(reference.parameters(), 5.)
-            optimizer.step()
-            baseline.step()
-            for parameter, expected_parameter in zip(model.parameters(), reference.parameters()):
-                torch.testing.assert_close(parameter, expected_parameter)
-        model.eval()
-        torch.testing.assert_close(model.predict(edge, features), model.predict(edge.flip(0), features))
-        self.assertEqual(cfg.attack.model.attribute.pos_weight, 1.)
-        self.assertEqual(cfg.attack.model.train.train_batch_size, 512)
-        self.assertEqual(cfg.attack.model.train.num_epochs, 50)
 
     def test_short_training_checkpoint_reload_and_cache_round_trip(self):
         cfg, target_data = config(), data()

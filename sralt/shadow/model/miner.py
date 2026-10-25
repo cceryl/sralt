@@ -8,7 +8,7 @@ from sralt.shadow.data import ShadowData
 class MINER(SMIA):
     """Shadow adapter for the social MINER baseline released with SMIA.
 
-    Training and recommendation evaluation follow SRALT's SMIA model. Attack
+    Training and recommendation evaluation follow the restored SRALT SMIA. Attack
     features use the learned social embedding table, as in the authors'
     ``mia_attack.py``, rather than propagated or fused embeddings.
     Reference: https://github.com/XuHao-bit/SMIA/tree/a7e79411244a574ba0b539510f105094a8956682

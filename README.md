@@ -6,7 +6,7 @@ SRALT studies social-relation inference from black-box recommendation outputs an
 
 As of 2026-10-25, `target/model=design` restores SRALT's implementation from commit `b8b6854d6f1289b141cbd9764a2876a37e9df6d4`, retaining graph-cache lifecycle fixes and the shared data/evaluation protocol. Its revision is `legacy-restored-v1`. The later original-paper DESIGN, SocialPP DESIGN, and their DESIGN-specific SAL variants have been removed from the working tree; Git history and archived reports retain their provenance.
 
-**Only DESIGN has been restored so far.** SMIA shadow and MLP still use the current author-aligned implementation, and GDMSR/EGCL have not been rolled back. Current pipeline outputs must not be described as the complete August baseline or compared as if they were the historical results.
+**DESIGN, SMIA shadow and MLP now restore the August algorithms and hyperparameters**, with public fixes and the current evaluation protocol retained. GDMSR/EGCL have not been rolled back. No tests, training or end-to-end evaluation have been run to verify the restored chain or its historical performance. See [SMIA/MLP restoration](docs/on-going/legacy-implementation/smia-mlp-restoration.md).
 
 Obsolete tuning, best10 and SAL-specific scripts and tests have been removed. Public sampling, state restoration, caching and metric fixes remain. See [the restoration task](docs/on-going/legacy-implementation/README.md), [cleanup record](docs/on-going/legacy-implementation/cleanup-record.md), and [TODO](todo.md).
 
@@ -35,7 +35,7 @@ The low-memory entry releases each model after its last use and avoids extra run
 python scripts/pipeline_low_memory.py target/data=ciao target/model=design shadow/model=smia attack/model=mlp
 ```
 
-These commands describe current capabilities, not a claim that the complete old chain has been restored or an instruction to start experiments now.
+These commands select the restored model chain. They are capability examples; this update did not start experiments or verify paper metrics.
 
 ## Models
 
@@ -43,9 +43,9 @@ These commands describe current capabilities, not a claim that the complete old 
 | --- | --- |
 | Target | Restored DESIGN; current GDMSR, EGCL and non-social LightGCN; GDMSR/EGCL SAL subclasses |
 | Shadow | SMIA, CSA, DSA, MINER adapter, TailProxy; optional no-shadow path |
-| Attack | MLP and its existing variants, MINER/En_MINER, TailProxy, Rec-only and public-degree baselines |
+| Attack | Restored BatchNorm MLP, MINER/En_MINER, TailProxy, Rec-only and public-degree baselines |
 
-For example, select `target/model=lightgcn` for a non-social target, or pair `shadow/model=miner` with `attack/model=miner` / `enminer`. Current SMIA, MLP and their budgets are documented in [models](docs/reference/models.md). Removed DESIGN variants are not active options.
+For example, select `target/model=lightgcn` for a non-social target, or pair `shadow/model=miner` with `attack/model=miner` / `enminer`. SMIA defaults to 300 epochs with Adam lr .01/decay .01/batch8192; MLP uses BatchNorm, pos_weight10 and clipped AdamW lr .001/weight_decay .0001/clip1, up to 50 epochs. Their configs use revision `legacy-restored-v1`; obsolete fixed-epoch/LayerNorm/balanced presets have been removed. See [models](docs/reference/models.md). Removed DESIGN variants are not active options.
 
 ## Epinions Data
 
@@ -57,7 +57,7 @@ Default preprocessing previously retained 18,061 users, 253,571 items and 713,23
 
 `python scripts/comparison_report.py` produces the general comparison report. Explicit `--targets` and `--pairs shadow:attack` select available configurations. By default it does not train missing models, but can evaluate existing caches; this is not a read-only JSON listing. Use `--dry-run` for plan/cache inspection without evaluation. Historical metric cohorts must not be pooled with restored-model results.
 
-Hydra outputs go to `runs/outputs/` or `runs/multirun/`; model/data caches remain in `.cache/`. The restored DESIGN configuration uses its new revision rather than reusing author-aligned weights. Do not delete all caches or rename old weight files into new identities.
+Hydra outputs go to `runs/outputs/` or `runs/multirun/`; model/data caches remain in `.cache/`. Restored DESIGN, SMIA and MLP configurations use new revisions rather than reusing author-aligned weights. MINER shadow inherits the restored SMIA training configuration; CSA/DSA also use the restored shared MLP. Do not delete all caches or rename old weight files into new identities.
 
 ## Documentation
 

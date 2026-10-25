@@ -1,7 +1,7 @@
 from typing import Literal
 
 import torch
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset
 from torch_geometric.utils import to_undirected, negative_sampling
 
 from .data import AttackData
@@ -83,42 +83,6 @@ class TrainAttackDataset(Dataset):
             f'attack_data={repr(self.attack_data)}, '
             f'negative_ratio={self.negative_ratio})'
         )
-
-
-class BalancedAttackBatchSampler(Sampler[list[int]]):
-    """Shuffle every training example once with equal classes in every batch.
-
-    Small tails are merged into the preceding batch; no examples are dropped.
-    Every batch stays balanced. TrainAttackDataset still
-    samples fresh negatives once per epoch using only training positives.
-    Validation construction and negative exclusion sets are unchanged.
-    """
-
-    def __init__(self, dataset: TrainAttackDataset, batch_size: int):
-        self.num_positive = dataset.pos_edge_index.size(1)
-        if dataset.num_negatives != self.num_positive or batch_size < 2 or batch_size % 2:
-            raise ValueError('Balanced attack batches require 1:1 training classes and an even batch size >= 2.')
-        self.half_batch_size = batch_size // 2
-        full, remainder = divmod(self.num_positive, self.half_batch_size)
-        self.sizes = [self.half_batch_size] * full
-        if remainder:
-            if self.sizes and remainder < self.half_batch_size / 2:
-                self.sizes[-1] += remainder
-            else:
-                self.sizes.append(remainder)
-
-    def __len__(self) -> int:
-        return len(self.sizes)
-
-    def __iter__(self):
-        positives = torch.randperm(self.num_positive).tolist()
-        negatives = (torch.randperm(self.num_positive) + self.num_positive).tolist()
-        start = 0
-        for size in self.sizes:
-            batch = positives[start:start + size] + negatives[start:start + size]
-            start += size
-            order = torch.randperm(len(batch)).tolist()
-            yield [batch[index] for index in order]
 
 
 class EvalAttackDataset(Dataset):
