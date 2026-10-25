@@ -197,6 +197,7 @@ class DefendedGDMSR(GDMSR):
                 break
 
         early_stopping.load_best_state()
+        defense.log_checkpoint(early_stopping.best_epoch)
 
     @timer('Training model "{self.__class__.__name__}" took {__timer__.elapsed:.2f} seconds.')
     def train_model(

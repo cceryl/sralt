@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch parallel DESIGN/SMIA/MLP seeds, or summarize existing run artifacts.
+"""Launch parallel DESIGN or GDMSR / SMIA / MLP seeds, or summarize artifacts.
 
 Uses only the standard library; --summarize-only never imports model code.
 Paths passed on the command line are relative to the repository root.
@@ -40,17 +40,22 @@ def summarize(run_dir):
     manifest = json.loads((run_dir / 'manifest.json').read_text())
     buckets = {}
     cases = []
+    target = manifest.get('target', 'design')
     for case in manifest['cases']:
         path = run_dir / case['output'] / 'metrics.json'
         status = case['status']
         if status == 'completed' and not path.is_file():
             status = 'missing_metrics'
-        cases.append({key: case[key] for key in ('dataset', 'seed', 'output')} | {'status': status})
+        cases.append({key: case[key] for key in ('dataset', 'seed', 'output')} | {
+            'target': target, 'status': status,
+        })
         if status != 'completed':
             continue
         record = json.loads(path.read_text())
         if (record['dataset'], record['seed']) != (case['dataset'], case['seed']):
             raise ValueError(f'Metric identity does not match manifest: {path}')
+        if record['models']['target'].lower() != target:
+            raise ValueError(f'Target model does not match manifest: {path}')
         for stage, groups in record['metrics'].items():
             for group, metrics in groups.items():
                 for metric, value in metrics.items():
@@ -65,13 +70,14 @@ def summarize(run_dir):
     for key, bucket in sorted(buckets.items()):
         values = bucket['values']
         rows.append(dict(zip(('dataset', 'stage', 'group', 'metric'), key)) | {
+            'target': target,
             'mean': statistics.mean(values) if values else None,
             'sample_std': statistics.stdev(values) if len(values) > 1 else None,
             'n': len(values), 'seeds': bucket['seeds'], 'missing_seeds': bucket['missing_seeds'],
         })
-    summary = {'schema': 1, 'updated_at': now(), 'cases': cases, 'metrics': rows}
+    summary = {'schema': 1, 'target': target, 'updated_at': now(), 'cases': cases, 'metrics': rows}
     write_json(run_dir / 'summary.json', summary)
-    fields = ['dataset', 'stage', 'group', 'metric', 'mean', 'sample_std', 'n', 'seeds', 'missing_seeds']
+    fields = ['target', 'dataset', 'stage', 'group', 'metric', 'mean', 'sample_std', 'n', 'seeds', 'missing_seeds']
     with (run_dir / 'summary.csv').open('w', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -111,6 +117,7 @@ def run_batch(args, run_dir):
     env['PYTHONUNBUFFERED'] = '1'
     manifest = {
         'schema': 1, 'created_at': now(), 'python': sys.executable,
+        'target': args.target,
         'cache_namespace': 'default', 'cache_refresh': False, 'jobs': args.jobs,
         'overrides': args.override, 'status': 'running', 'cases': [],
     }
@@ -119,12 +126,12 @@ def run_batch(args, run_dir):
             output = f'{dataset}/seed-{seed}'
             command = [
                 sys.executable, str(ROOT / 'scripts/pipeline_low_memory.py'),
-                f'target/data={dataset}', 'target/model=design', 'shadow/model=smia',
+                f'target/data={dataset}', f'target/model={args.target}', 'shadow/model=smia',
                 'attack/model=mlp', f'seed={seed}', *args.override,
                 f'hydra.run.dir={run_dir / output}', 'hydra.job.chdir=False',
             ]
             manifest['cases'].append({
-                'dataset': dataset, 'seed': seed, 'output': output,
+                'target': args.target, 'dataset': dataset, 'seed': seed, 'output': output,
                 'command': command, 'status': 'pending',
             })
     manifest_path = run_dir / 'manifest.json'
@@ -198,6 +205,8 @@ def run_batch(args, run_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--target', choices=['design', 'gdmsr'], default='design',
+                        help='target recommender; shadow=smia and attack=mlp')
     parser.add_argument('--datasets', nargs='+', choices=['ciao', 'epinions', 'flickr', 'yelp'], default=['ciao'])
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 43, 44, 45, 46])
     parser.add_argument('--jobs', type=int, default=5, help='maximum parallel seeds within one dataset')
@@ -219,7 +228,10 @@ def main():
             parser.error(f'unsupported override: {override}; use dataset/seed options for scheduling')
     args.datasets = list(dict.fromkeys(args.datasets))
     args.seeds = list(dict.fromkeys(args.seeds))
-    default_dir = Path('runs/restored-baseline') / datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d_%H-%M-%S_%f')
+    batch_name = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d_%H-%M-%S_%f')
+    if args.target != 'design':
+        batch_name += f'_{args.target}'
+    default_dir = Path('runs/restored-baseline') / batch_name
     run_dir = (ROOT / (args.run_dir or default_dir)).resolve()
     previous = signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:

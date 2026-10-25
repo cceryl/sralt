@@ -1,6 +1,7 @@
 """Socially Adversarial Learning from SMIA, adapted to undirected user pairs."""
 
 from collections.abc import Iterator
+import logging
 
 import torch
 import torch.nn as nn
@@ -115,6 +116,18 @@ class SocialAdversarialLearning(nn.Module):
     def create_optimizer(self) -> Optimizer:
         """Create the independent surrogate optimizer once per target training run."""
         return instantiate(self.optimizer_config, params=self.surrogate.parameters())
+
+    def log_checkpoint(self, best_epoch: int):
+        """Expose warmup-only selections without changing validation selection."""
+        fitted_epochs = max(0, best_epoch - self.surrogate_warmup_epochs)
+        logging.info(
+            'SAL checkpoint: best_epoch=%d, first_surrogate_epoch=%d, surrogate_fit_epochs=%d, loss_weight=%g',
+            best_epoch, self.surrogate_warmup_epochs + 1, fitted_epochs, self.loss_weight
+        )
+        if fitted_epochs == 0:
+            logging.warning(
+                'SAL best checkpoint precedes surrogate fitting; its defense loss used an unfitted surrogate.'
+            )
 
     @staticmethod
     def pair_features(user_embeds: torch.Tensor, pairs: torch.Tensor) -> torch.Tensor:

@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 name: GDMSR_SAL
-revision: sal-isolated-v1
+revision: sal-audited-v2
 
 attribute:
   _target_: sralt.target.model.gdmsr.DefendedGDMSR

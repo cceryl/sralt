@@ -1,0 +1,23 @@
+defaults:
+  - design
+  - _self_
+
+name: DESIGN_SAL
+revision: legacy-sal-v1
+
+attribute:
+  _target_: sralt.target.model.design.DefendedDESIGN
+  _recursive_: False
+  defense:
+    _target_: sralt.target.defense.SocialAdversarialLearning
+    _recursive_: False
+    # DESIGN22 pp_main.py's starting value; not a validated Table 4 optimum.
+    loss_weight: 0.01
+    sample_ratio: 1.0
+    surrogate_warmup_epochs: 5
+    surrogate_epochs: 3
+    surrogate_batch_size: 256
+    surrogate_grad_clip: 5.0
+    optimizer:
+      _target_: torch.optim.Adam
+      lr: 0.01
