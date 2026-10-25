@@ -1,5 +1,5 @@
 name: MLP
-revision: legacy-restored-v1
+revision: legacy-auc-f1-v2
 
 attribute:
   _target_: sralt.attack.model.mlp.MLP
@@ -22,8 +22,6 @@ train:
       task: binary
     - _target_: torchmetrics.F1Score
       task: binary
-    - _target_: sralt.utils.TPRatFPR
-      target_fpr: 0.01
   early_stopping:
     _target_: sralt.utils.EarlyStopping
     patience: 5

@@ -1,5 +1,5 @@
 name: SMIA
-revision: legacy-restored-v1
+revision: legacy-best10-v2
 
 attribute:
   _target_: sralt.shadow.model.smia.SMIA
@@ -11,7 +11,7 @@ train:
   train_batch_size: 8192
   val_batch_size: 2048
   val_num_negatives: 999
-  num_epochs: 300
+  num_epochs: 10
   optimizer:
     _target_: torch.optim.Adam
     lr: 1e-2
