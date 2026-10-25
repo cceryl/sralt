@@ -15,7 +15,7 @@ from torch_geometric.metrics.link_pred import LinkPredMetric
 from sralt.target.model import TargetModel
 from sralt.target.data import TargetData, TrainTargetDataset, EvalTargetDataset
 from sralt.utils import timer, build_normalized_adj, model_fingerprint
-from sralt.utils import compute_recommendation_metrics, recommend_items, DataLoader, EarlyStopping
+from sralt.utils import compute_recommendation_metrics, recommend_items, TensorBatchLoader, EarlyStopping
 
 
 class LightGCN(TargetModel):
@@ -91,8 +91,8 @@ class LightGCN(TargetModel):
     ):
         """Train on behavioral training edges and restore the best validation state."""
         behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
-        train_loader = DataLoader(TrainTargetDataset(data), batch_size=train_batch_size, shuffle=True)
-        val_loader = DataLoader(
+        train_loader = TensorBatchLoader(TrainTargetDataset(data), batch_size=train_batch_size, shuffle=True)
+        val_loader = TensorBatchLoader(
             EvalTargetDataset(data, split='val', num_negatives=val_num_negatives),
             batch_size=val_batch_size, shuffle=False
         )
@@ -174,7 +174,7 @@ class LightGCN(TargetModel):
 
         self.eval()
         behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
-        test_loader = DataLoader(
+        test_loader = TensorBatchLoader(
             EvalTargetDataset(data, split='test', num_negatives=test_num_negatives),
             batch_size=test_batch_size, shuffle=False
         )

@@ -37,6 +37,11 @@ class TrainTargetDataset(Dataset):
 
         return self.users[index], self.positive_items[index], self.negative_items[index]
 
+    def get_epoch_tensors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample the full training epoch once for direct batch indexing."""
+        self.negative_items = self.sample_negative_items()
+        return self.users, self.positive_items, self.negative_items
+
     def __len__(self) -> int:
         """
         Returns the total number of samples in the dataset.
@@ -89,6 +94,10 @@ class EvalTargetDataset(Dataset):
                  (num_negatives,) and the others are scalars.
         """
         return self.users[index], self.positive_items[index], self.negative_items[index]
+
+    def get_epoch_tensors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Reuse the candidates fixed when this evaluation dataset was built."""
+        return self.users, self.positive_items, self.negative_items
 
     def __len__(self) -> int:
         """

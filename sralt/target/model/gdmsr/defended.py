@@ -17,7 +17,7 @@ from .data import build_item_history, DenoiserDataset
 from .gdmsr import GDMSR
 from sralt.target.data import TargetData, EvalTargetDataset
 from sralt.target.defense import SocialAdversarialLearning, SocialPairSampler
-from sralt.utils import DataLoader, EarlyStopping, compute_recommendation_metrics, timer
+from sralt.utils import TensorBatchLoader, EarlyStopping, compute_recommendation_metrics, timer
 
 
 class DefendedGDMSR(GDMSR):
@@ -79,9 +79,9 @@ class DefendedGDMSR(GDMSR):
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         train_dataset = DenoiserDataset(data)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        train_loader = TensorBatchLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
-        val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+        val_loader = TensorBatchLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
         model_name = self.__class__.__name__
         metric_names = [

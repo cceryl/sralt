@@ -1,6 +1,7 @@
 import typing
 import json
 import logging
+from collections.abc import Iterable
 from typing import Callable
 
 import torch
@@ -60,7 +61,7 @@ def recommend_items(
 def compute_recommendation_metrics(
     embeds: torch.Tensor,
     metrics: list[LinkPredMetric],
-    eval_loader: DataLoader
+    eval_loader: Iterable[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
 ) -> list[float]:
     """
     Compute multiple recommendation metrics (e.g., Recall, NDCG) at given k(s) using dot product scores.
@@ -68,7 +69,7 @@ def compute_recommendation_metrics(
 
     :param embeds: The combined user and item embeddings.
     :param metrics: A list of metric calculators.
-    :param eval_loader: DataLoader for evaluation data yielding (users, pos_items, neg_items), 
+    :param eval_loader: Iterable of evaluation batches yielding (users, pos_items, neg_items),
                         where users & pos_items of shape (batch_size,), neg_items of shape (batch_size, num_neg).
     :return: The computed metrics as a list of floats.
     """

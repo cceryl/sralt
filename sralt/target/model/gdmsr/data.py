@@ -148,6 +148,15 @@ class DenoiserDataset(Dataset):
 
         return user, pos_item, neg_item, pos_peer, neg_peer
 
+    def get_epoch_tensors(self) -> tuple[torch.Tensor, ...]:
+        """Sample aligned recommendation and peer tensors on the current graph."""
+        self.positive_peers, self.negative_peers = sample_social_relations(
+            users=self.rec_dataset.users,
+            edge_index=self.social_edge_index,
+            num_users=self.rec_dataset.data.num_users,
+        )
+        return (*self.rec_dataset.get_epoch_tensors(), self.positive_peers, self.negative_peers)
+
     def __len__(self) -> int:
         """
         Returns the total number of samples in the dataset.

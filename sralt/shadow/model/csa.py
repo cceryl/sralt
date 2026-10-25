@@ -16,7 +16,7 @@ from torch_geometric.metrics.link_pred import LinkPredMetric
 from .base import ShadowModel
 from sralt.shadow.data import ShadowData, TrainShadowDataset, EvalShadowDataset
 from sralt.utils import timer, build_normalized_adj, model_fingerprint, compute_recommendation_metrics
-from sralt.utils import DataLoader, EarlyStopping
+from sralt.utils import TensorBatchLoader, EarlyStopping
 
 
 class CSA(ShadowModel):
@@ -235,7 +235,7 @@ class CSA(ShadowModel):
     def _train_branch(
         self, *, branch: Literal['social', 'behavioral'],
         social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor,
-        train_loader: DataLoader, val_loader: DataLoader, num_epochs: int, optimizer: Optimizer,
+        train_loader: TensorBatchLoader, val_loader: TensorBatchLoader, num_epochs: int, optimizer: Optimizer,
         metrics: list[LinkPredMetric], early_stopping: EarlyStopping, writer: SummaryWriter | None
     ):
         """
@@ -244,8 +244,8 @@ class CSA(ShadowModel):
         :param branch: Current training branch, either 'social' or 'behavioral'.
         :param social_edge_index: Undirected edge index tensor of shape (2, num_social_edges) representing social (and semantic) connections.
         :param behavioral_edge_index: Undirected edge index tensor of shape (2, num_behavioral_edges) representing behavioral interactions.
-        :param train_loader: DataLoader for training data.
-        :param val_loader: DataLoader for validation data.
+        :param train_loader: TensorBatchLoader for training data.
+        :param val_loader: TensorBatchLoader for validation data.
         :param num_epochs: Maximum number of training epochs.
         :param optimizer: Optimizer for training.
         :param metrics: List of link prediction metrics to compute during validation.
@@ -334,9 +334,9 @@ class CSA(ShadowModel):
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         train_dataset = TrainShadowDataset(data)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        train_loader = TensorBatchLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalShadowDataset(data, split='val', num_negatives=val_num_negatives)
-        val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+        val_loader = TensorBatchLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
         common_kwargs = {
             'behavioral_edge_index': undirected_behavioral_edge_index,
@@ -390,7 +390,7 @@ class CSA(ShadowModel):
         social_edge_index = self._augment_social_graph(data.social_edge_index, behavioral_edge_index)
 
         test_dataset = EvalShadowDataset(data, split='test', num_negatives=test_num_negatives)
-        test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
+        test_loader = TensorBatchLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
         metric_results = compute_recommendation_metrics(
             embeds=self.get_embedding(self.feature, social_edge_index, behavioral_edge_index),

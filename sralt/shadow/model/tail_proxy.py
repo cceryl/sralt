@@ -11,7 +11,7 @@ from torch_geometric.utils import coalesce, to_undirected
 
 from .base import ShadowModel
 from sralt.shadow.data import TrainShadowDataset, EvalShadowDataset
-from sralt.utils import DataLoader, build_normalized_adj, compute_recommendation_metrics, model_fingerprint
+from sralt.utils import TensorBatchLoader, build_normalized_adj, compute_recommendation_metrics, model_fingerprint
 
 
 class GraphBranch(nn.Module):
@@ -142,9 +142,11 @@ class TailProxyShadow(ShadowModel):
         idf = self.recommendation_idf(data.behavioral_edge_index)
         edges = data.behavioral_train_edge_index
         adj = self.behavior_adj(edges, idf)
-        train_loader = DataLoader(TrainShadowDataset(data), batch_size=train_batch_size, shuffle=True)
-        val_loader = DataLoader(EvalShadowDataset(data, split='val', num_negatives=val_num_negatives),
-                                batch_size=val_batch_size, shuffle=False)
+        train_loader = TensorBatchLoader(TrainShadowDataset(data), batch_size=train_batch_size, shuffle=True)
+        val_loader = TensorBatchLoader(
+            EvalShadowDataset(data, split='val', num_negatives=val_num_negatives),
+            batch_size=val_batch_size, shuffle=False
+        )
         common = dict(edges=edges, idf=idf, train_loader=train_loader, val_loader=val_loader,
                       num_epochs=num_epochs, optimizer=optimizer, metrics=instantiate(metrics),
                       early_stopping=early_stopping, writer=writer)
@@ -163,8 +165,10 @@ class TailProxyShadow(ShadowModel):
         social = self.social_branch(self.social_adj(data.social_edge_index, self.semantic_edges(codes)))
         # Concatenated branches implement the sum of their recommendation scores.
         embeds = torch.cat([behavior, social[:self.num_users + self.num_items]], dim=-1)
-        loader = DataLoader(EvalShadowDataset(data, split='test', num_negatives=test_num_negatives),
-                            batch_size=test_batch_size, shuffle=False)
+        loader = TensorBatchLoader(
+            EvalShadowDataset(data, split='test', num_negatives=test_num_negatives),
+            batch_size=test_batch_size, shuffle=False
+        )
         return compute_recommendation_metrics(embeds, metrics, loader)
 
     @torch.no_grad()

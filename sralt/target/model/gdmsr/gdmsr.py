@@ -15,7 +15,7 @@ from .denoiser import Denoiser
 from .data import build_item_history, DenoiserDataset
 from sralt.target import TargetData, EvalTargetDataset, TargetModel
 from sralt.utils import timer, model_fingerprint, compute_recommendation_metrics, recommend_items
-from sralt.utils import DataLoader, EarlyStopping
+from sralt.utils import TensorBatchLoader, EarlyStopping
 
 
 class GDMSR(TargetModel):
@@ -148,9 +148,9 @@ class GDMSR(TargetModel):
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         train_dataset = DenoiserDataset(data)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        train_loader = TensorBatchLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
-        val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+        val_loader = TensorBatchLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
         model_name = self.__class__.__name__
         metric_names = [
@@ -305,7 +305,7 @@ class GDMSR(TargetModel):
 
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
         test_dataset = EvalTargetDataset(data, split='test', num_negatives=test_num_negatives)
-        test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
+        test_loader = TensorBatchLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
         metric_results = compute_recommendation_metrics(
             embeds=self.get_embedding(

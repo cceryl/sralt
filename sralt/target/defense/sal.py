@@ -10,8 +10,6 @@ from omegaconf import DictConfig
 from torch.optim import Optimizer
 from torch_geometric.utils import negative_sampling, to_undirected
 
-from sralt.utils import DataLoader
-
 
 class SocialRelationClassifier(nn.Module):
     """Surrogate relation classifier on concatenated propagated user embeddings.
@@ -134,13 +132,12 @@ class SocialAdversarialLearning(nn.Module):
         labels = torch.cat([
             user_embeds.new_ones(positives.size(1)), user_embeds.new_zeros(negatives.size(1))
         ])
-        loader = DataLoader(torch.arange(pairs.size(1), device=pairs.device),
-                            batch_size=self.surrogate_batch_size, shuffle=True)
         self.surrogate.train()
         self.surrogate.requires_grad_(True)
         total_loss, total_samples = 0.0, 0
         for _ in range(self.surrogate_epochs):
-            for indices in loader:
+            order = torch.randperm(pairs.size(1), device=pairs.device)
+            for indices in order.split(self.surrogate_batch_size):
                 optimizer.zero_grad(set_to_none=True)
                 logits = self.surrogate(self.pair_features(user_embeds, pairs[:, indices]))
                 loss = F.binary_cross_entropy_with_logits(logits, labels[indices])

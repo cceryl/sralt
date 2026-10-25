@@ -14,7 +14,7 @@ from torch_geometric.utils import to_undirected
 from .egcl import EGCL
 from sralt.target.data import TargetData, EvalTargetDataset
 from sralt.target.defense import SocialAdversarialLearning, SocialPairSampler
-from sralt.utils import DataLoader, EarlyStopping, compute_recommendation_metrics
+from sralt.utils import TensorBatchLoader, EarlyStopping, compute_recommendation_metrics
 
 
 class DefendedEGCL(EGCL):
@@ -65,7 +65,7 @@ class DefendedEGCL(EGCL):
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
-        val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+        val_loader = TensorBatchLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
         model_name = self.__class__.__name__
         metric_names = [

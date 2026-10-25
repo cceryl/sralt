@@ -18,7 +18,7 @@ from .rating import RatingGCN
 from sralt.target.model import TargetModel
 from sralt.target.data import TargetData, TrainTargetDataset, EvalTargetDataset
 from sralt.utils import timer, model_fingerprint, compute_recommendation_metrics, recommend_items
-from sralt.utils import DataLoader, EarlyStopping
+from sralt.utils import TensorBatchLoader, EarlyStopping
 
 
 class DESIGN(TargetModel):
@@ -141,9 +141,9 @@ class DESIGN(TargetModel):
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
 
         train_dataset = TrainTargetDataset(data)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        train_loader = TensorBatchLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         val_dataset = EvalTargetDataset(data, split='val', num_negatives=val_num_negatives)
-        val_loader = DataLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
+        val_loader = TensorBatchLoader(val_dataset, batch_size=val_batch_size, shuffle=False)
 
         model_name = self.__class__.__name__
         metric_names = [
@@ -253,7 +253,7 @@ class DESIGN(TargetModel):
 
         undirected_behavioral_edge_index = to_undirected(data.behavioral_train_edge_index)
         test_dataset = EvalTargetDataset(data, split='test', num_negatives=test_num_negatives)
-        test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
+        test_loader = TensorBatchLoader(test_dataset, batch_size=test_batch_size, shuffle=False)
 
         metric_results = compute_recommendation_metrics(
             embeds=self.get_embedding(data.social_edge_index, undirected_behavioral_edge_index),
