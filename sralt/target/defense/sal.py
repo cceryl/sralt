@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 import logging
+import math
 
 import torch
 import torch.nn as nn
@@ -15,14 +16,14 @@ from torch_geometric.utils import negative_sampling, to_undirected
 class SocialRelationClassifier(nn.Module):
     """Surrogate relation classifier on concatenated propagated user embeddings.
 
-    Input width is 2d. This is the author's ``Defender``, independent of the
+    Default input width is 2d. This is the author's ``Defender``, independent of the
     black-box SMIA classifier used to evaluate privacy after target training.
     """
 
-    def __init__(self, embed_dim: int):
+    def __init__(self, embed_dim: int, input_dim: int | None = None):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(2 * embed_dim, 2 * embed_dim),
+            nn.Linear(2 * embed_dim if input_dim is None else input_dim, 2 * embed_dim),
             nn.LeakyReLU(0.2),
             nn.Linear(2 * embed_dim, embed_dim),
             nn.LeakyReLU(0.2),
@@ -50,12 +51,23 @@ class SocialPairSampler:
         self.social_edge_index = to_undirected(social_edge_index, num_nodes=num_users)
         self.positive_pairs = self.social_edge_index[:, self.social_edge_index[0] < self.social_edge_index[1]]
         self.num_users = num_users
+        self.sample_ratio = sample_ratio
         self.num_samples = round(self.positive_pairs.size(1) * sample_ratio)
         available_negatives = num_users * (num_users - 1) // 2 - self.positive_pairs.size(1)
         if not 2 <= self.num_samples <= self.positive_pairs.size(1):
             raise ValueError('SAL needs at least two sampled positive pairs, with sample_ratio <= 1.')
         if self.num_samples > available_negatives:
             raise ValueError('SAL needs as many distinct social non-edges as sampled positive pairs.')
+
+    def exclude(self, positives: torch.Tensor, negatives: torch.Tensor):
+        """Exclude diagnostic supervision, retaining all true edges in the graph."""
+        ids = self.positive_pairs[0] * self.num_users + self.positive_pairs[1]
+        held = positives[0] * self.num_users + positives[1]
+        self.positive_pairs = self.positive_pairs[:, ~torch.isin(ids, held)]
+        self.social_edge_index = to_undirected(torch.cat((self.social_edge_index, negatives), dim=1))
+        self.num_samples = round(self.positive_pairs.size(1) * self.sample_ratio)
+        if self.num_samples < 2:
+            raise ValueError('Diagnostic holdout leaves fewer than two SAL training pairs')
 
     def sample(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return independently shuffled positive and negative [2, num_pairs] tensors."""
@@ -100,10 +112,20 @@ class SocialAdversarialLearning(nn.Module):
         self, embed_dim: int, loss_weight: float, sample_ratio: float,
         surrogate_warmup_epochs: int, surrogate_epochs: int,
         surrogate_batch_size: int, surrogate_grad_clip: float,
-        optimizer: DictConfig
+        optimizer: DictConfig, diagnostics: DictConfig | None = None,
+        frozen_eval: bool = False, surrogate_refreshes: int = 1,
+        pair_feature_mode: str = 'concat', loss_kind: str = 'moments'
     ):
         super().__init__()
-        self.surrogate = SocialRelationClassifier(embed_dim)
+        if pair_feature_mode not in {'concat', 'relation'}:
+            raise ValueError('pair_feature_mode must be concat or relation')
+        self.pair_feature_mode = pair_feature_mode
+        if loss_kind not in {'moments', 'confusion'}:
+            raise ValueError('loss_kind must be moments or confusion')
+        self.loss_kind = loss_kind
+        self.surrogate = SocialRelationClassifier(
+            embed_dim, input_dim=(4 if pair_feature_mode == 'relation' else 2) * embed_dim
+        )
         self.surrogate.requires_grad_(False)
         self.loss_weight = loss_weight
         self.sample_ratio = sample_ratio
@@ -112,6 +134,24 @@ class SocialAdversarialLearning(nn.Module):
         self.surrogate_batch_size = surrogate_batch_size
         self.surrogate_grad_clip = surrogate_grad_clip
         self.optimizer_config = optimizer
+        self.diagnostics_config = diagnostics
+        self.frozen_eval = frozen_eval
+        self.surrogate_refreshes = surrogate_refreshes
+
+    def refresh_schedule(self, recommendation_steps: int) -> dict[int, int]:
+        """Split the existing per-epoch fit budget over evenly spaced rec steps."""
+        count = self.surrogate_refreshes
+        if not 1 <= count <= min(self.surrogate_epochs, recommendation_steps):
+            raise ValueError('surrogate_refreshes must be between 1 and min(surrogate_epochs, rec steps)')
+        rounds, remainder = divmod(self.surrogate_epochs, count)
+        return {index * recommendation_steps // count: rounds + (index < remainder)
+                for index in range(count)}
+
+    def create_diagnostics(self, model, sampler):
+        if self.diagnostics_config is None or not self.diagnostics_config.get('enabled', False):
+            return None
+        from .diagnostics import SALDiagnostics
+        return SALDiagnostics(model, sampler, self.diagnostics_config)
 
     def create_optimizer(self) -> Optimizer:
         """Create the independent surrogate optimizer once per target training run."""
@@ -129,16 +169,20 @@ class SocialAdversarialLearning(nn.Module):
                 'SAL best checkpoint precedes surrogate fitting; its defense loss used an unfitted surrogate.'
             )
 
-    @staticmethod
-    def pair_features(user_embeds: torch.Tensor, pairs: torch.Tensor) -> torch.Tensor:
-        """Concatenate endpoints of canonical user pairs into [num_pairs, 2d]."""
-        return torch.cat([user_embeds[pairs[0]], user_embeds[pairs[1]]], dim=-1)
+    def pair_features(self, user_embeds: torch.Tensor, pairs: torch.Tensor) -> torch.Tensor:
+        """Use canonical endpoints, optionally adding absolute difference/product."""
+        left, right = user_embeds[pairs[0]], user_embeds[pairs[1]]
+        if self.pair_feature_mode == 'relation':
+            return torch.cat([left, right, (left - right).abs(), left * right], dim=-1)
+        return torch.cat([left, right], dim=-1)
 
     def fit_surrogate(
-        self, user_embeds: torch.Tensor, sampler: SocialPairSampler, optimizer: Optimizer
+        self, user_embeds: torch.Tensor, sampler: SocialPairSampler, optimizer: Optimizer,
+        *, sampled_pairs: tuple[torch.Tensor, torch.Tensor] | None = None,
+        epochs: int | None = None
     ) -> float:
         """Fit BCE on a detached embedding snapshot and a fresh balanced sample."""
-        positives, negatives = sampler.sample()
+        positives, negatives = sampler.sample() if sampled_pairs is None else sampled_pairs
         pairs = torch.cat([positives, negatives], dim=1)
         # Construct features per batch instead of materializing O(|E| * d) storage.
         user_embeds = user_embeds.detach()
@@ -148,7 +192,8 @@ class SocialAdversarialLearning(nn.Module):
         self.surrogate.train()
         self.surrogate.requires_grad_(True)
         total_loss, total_samples = 0.0, 0
-        for _ in range(self.surrogate_epochs):
+        fit_epochs = self.surrogate_epochs if epochs is None else epochs
+        for _ in range(fit_epochs):
             order = torch.randperm(pairs.size(1), device=pairs.device)
             for indices in order.split(self.surrogate_batch_size):
                 optimizer.zero_grad(set_to_none=True)
@@ -166,14 +211,32 @@ class SocialAdversarialLearning(nn.Module):
     def distribution_loss(
         self, user_embeds: torch.Tensor, positive_pairs: torch.Tensor, negative_pairs: torch.Tensor
     ) -> torch.Tensor:
-        """Match means and sample variances of the surrogate probabilities.
+        """Apply the configured target-side loss, keeping the surrogate frozen.
 
         vector_norm gives the author's exact distance, with a finite zero
         subgradient when both moments match. Dropout remains active in training.
         Frozen surrogate weights still propagate gradients to target embeddings.
         """
-        positive_probabilities = self.surrogate(self.pair_features(user_embeds, positive_pairs)).sigmoid()
-        negative_probabilities = self.surrogate(self.pair_features(user_embeds, negative_pairs)).sigmoid()
+        positive_logits = self.surrogate(self.pair_features(user_embeds, positive_pairs))
+        negative_logits = self.surrogate(self.pair_features(user_embeds, negative_pairs))
+        return self.loss_from_logits(positive_logits, negative_logits)
+
+    def loss_from_logits(self, positive_logits: torch.Tensor, negative_logits: torch.Tensor) -> torch.Tensor:
+        """Moments or balanced BCE-to-0.5 minus its log(2) minimum.
+
+        Confusion is a target-only SAL extension; surrogate fitting still uses
+        the true binary labels. Both classes have equal weight even if sizes differ.
+        """
+        if self.loss_kind == 'confusion':
+            positive_loss = F.binary_cross_entropy_with_logits(
+                positive_logits, torch.full_like(positive_logits, 0.5)
+            )
+            negative_loss = F.binary_cross_entropy_with_logits(
+                negative_logits, torch.full_like(negative_logits, 0.5)
+            )
+            return 0.5 * (positive_loss + negative_loss) - math.log(2)
+        positive_probabilities = positive_logits.sigmoid()
+        negative_probabilities = negative_logits.sigmoid()
         differences = torch.stack([
             positive_probabilities.mean() - negative_probabilities.mean(),
             positive_probabilities.var() - negative_probabilities.var()

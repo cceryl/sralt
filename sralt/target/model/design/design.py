@@ -75,7 +75,7 @@ class DESIGN(TargetModel):
         """
         return self.twin.get_embedding(social_edge_index, behavioral_edge_index)
 
-    def calculate_loss(self, pos_scores: torch.Tensor, neg_scores: torch.Tensor, nodes: torch.Tensor) -> torch.Tensor:
+    def calculate_loss(self, pos_scores: torch.Tensor, neg_scores: torch.Tensor, nodes: torch.Tensor, *, return_components: bool = False):
         """
         Compute loss using Bayesian Personalized Ranking (BPR) loss, L2 regularization, and distillation loss.
         Note that pos_scores[i] and neg_scores[i] correspond to the same user.
@@ -95,6 +95,7 @@ class DESIGN(TargetModel):
         diff_scores = pos_scores - neg_scores
         rank_loss = -typing.cast(torch.Tensor, logsigmoid(diff_scores)).mean()
         loss += rank_loss
+        components = {"bpr": rank_loss}
 
         # L2 regularization
         if self.decay != 0.0:
@@ -104,7 +105,8 @@ class DESIGN(TargetModel):
                 self.twin.embeds.weight[nodes].pow(2).sum()
             ) / batch_size
 
-            loss += self.decay * reg_loss
+            components["l2"] = self.decay * reg_loss
+            loss += components["l2"]
 
         # Distillation loss
         if self.distill_weight != 0.0:
@@ -116,9 +118,10 @@ class DESIGN(TargetModel):
                 distill_loss += F.binary_cross_entropy(pos_probs[:, student], pos_probs[:, teacher].detach())
                 distill_loss += F.binary_cross_entropy(neg_probs[:, student], neg_probs[:, teacher].detach())
 
-            loss += self.distill_weight * distill_loss / 6.0
+            components["distillation"] = self.distill_weight * distill_loss / 6.0
+            loss += components["distillation"]
 
-        return loss
+        return (loss, components) if return_components else loss
 
     def _train_model(
         self, *, data: TargetData, writer: SummaryWriter | None,

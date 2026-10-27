@@ -1,0 +1,4 @@
+[
+  {"name": "moments", "overrides": ["target.model.attribute.defense.loss_kind=moments"]},
+  {"name": "confusion", "overrides": ["target.model.attribute.defense.loss_kind=confusion"]}
+]

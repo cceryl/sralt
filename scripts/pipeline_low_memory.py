@@ -132,6 +132,9 @@ def run_pipeline(config: DictConfig) -> None:
                 'schema': 1, 'dataset': config.target.data.name.lower(), 'seed': config.seed,
                 'models': {stage: config[stage].model.name for stage in ('target', 'shadow', 'attack')},
                 'revisions': {stage: config[stage].model.get('revision') for stage in ('target', 'shadow', 'attack')},
+                'target_defense': {
+                    'method': 'sal', 'loss_weight': float(config.target.model.attribute.defense.loss_weight)
+                } if config.target.model.attribute.get('defense') is not None else None,
                 'metrics': recorded_metrics,
             }
             temporary = output_dir / 'metrics.json.tmp'

@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 name: DESIGN_SAL
-revision: legacy-sal-v1
+revision: legacy-sal-objectives-v5
 
 attribute:
   _target_: sralt.target.model.design.DefendedDESIGN
@@ -11,11 +11,25 @@ attribute:
   defense:
     _target_: sralt.target.defense.SocialAdversarialLearning
     _recursive_: False
-    # DESIGN22 pp_main.py's starting value; not a validated Table 4 optimum.
-    loss_weight: 0.01
+    # User-selected model-wide default (2026-10-27); shared across datasets.
+    loss_kind: moments
+    pair_feature_mode: concat
+    frozen_eval: false
+    diagnostics:
+      enabled: false
+      run_id: null
+      every: 1
+      pairs: 4096
+      batch_size: 1024
+      gradient_batches: 1
+      seed: 1729
+      holdout: none
+      refit_epochs: 3
+    loss_weight: 0.02
     sample_ratio: 1.0
     surrogate_warmup_epochs: 5
     surrogate_epochs: 3
+    surrogate_refreshes: 1
     surrogate_batch_size: 256
     surrogate_grad_clip: 5.0
     optimizer:

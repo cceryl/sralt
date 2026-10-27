@@ -1,0 +1,4 @@
+[
+  {"name": "concat", "overrides": ["target.model.attribute.defense.pair_feature_mode=concat"]},
+  {"name": "relation", "overrides": ["target.model.attribute.defense.pair_feature_mode=relation"]}
+]

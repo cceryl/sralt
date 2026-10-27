@@ -206,8 +206,9 @@ class Denoiser(nn.Module):
         self, *,
         social_edge_index: torch.Tensor, behavioral_edge_index: torch.Tensor, social_edge_mask: torch.Tensor,
         item_history: torch.Tensor, item_history_mask: torch.Tensor,
-        users: torch.Tensor, pos_items: torch.Tensor, neg_items: torch.Tensor, pos_peers: torch.Tensor, neg_peers: torch.Tensor
-    ) -> torch.Tensor:
+        users: torch.Tensor, pos_items: torch.Tensor, neg_items: torch.Tensor, pos_peers: torch.Tensor, neg_peers: torch.Tensor,
+        return_components: bool = False
+    ):
         """
         Compute the recommendation scores and relation confidence scores, and combine them into a final loss.
 
@@ -251,6 +252,10 @@ class Denoiser(nn.Module):
         relation_loss = self.link_pred_loss(relation_scores, relation_labels.float())
         loss = self.alpha * relation_loss + (1.0 - self.alpha) * recommendation_loss + self.decay * regularization
 
+        if return_components:
+            return loss, {"relation": self.alpha * relation_loss,
+                          "bpr": (1.0 - self.alpha) * recommendation_loss,
+                          "l2": self.decay * regularization}
         return loss
 
     @torch.no_grad()

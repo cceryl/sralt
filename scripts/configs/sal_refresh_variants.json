@@ -1,0 +1,4 @@
+[
+  {"name": "once", "overrides": ["target.model.attribute.defense.surrogate_refreshes=1"]},
+  {"name": "refresh3", "overrides": ["target.model.attribute.defense.surrogate_refreshes=3"]}
+]

@@ -1,0 +1,6 @@
+[
+  {"name": "control", "overrides": []},
+  {"name": "lr003", "overrides": ["target.model.attribute.defense.optimizer.lr=0.003"]},
+  {"name": "fit10", "overrides": ["target.model.attribute.defense.surrogate_epochs=10"]},
+  {"name": "frozen-eval", "overrides": ["target.model.attribute.defense.frozen_eval=true"]}
+]
