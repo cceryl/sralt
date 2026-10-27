@@ -2,7 +2,6 @@
 
 import json
 import logging
-import math
 import time
 
 import torch
@@ -20,24 +19,13 @@ class TailProxyAttack(AttackModel):
 
     def __init__(self, user_feature_dim, num_quantizers=8, rvq_enabled=True,
                  normalize_features=True, code_matching=True, idf_pair_signal=True,
-                 sparse_training=True, sparse_probability=.5, hidden_dim=128, dropout=.2,
-                 pos_weight=1., balanced_batches=False, merge_small_tail=True,
-                 selection_metrics=None):
+                 sparse_training=True, sparse_probability=.5, hidden_dim=128, dropout=.2):
         super().__init__(user_feature_dim)
         self.num_quantizers, self.rvq_enabled = num_quantizers, rvq_enabled
         self.normalize_features, self.code_matching = normalize_features, code_matching
         self.idf_pair_signal = idf_pair_signal
         self.sparse_training, self.sparse_probability = sparse_training, sparse_probability
         self.hidden_dim, self.dropout = hidden_dim, dropout
-        self.pos_weight = float(pos_weight)
-        self.balanced_batches, self.merge_small_tail = balanced_batches, merge_small_tail
-        # None preserves the native sum of all configured validation metrics.
-        self.selection_metrics = tuple(selection_metrics) if selection_metrics is not None else None
-        if not math.isfinite(self.pos_weight) or self.pos_weight <= 0:
-            raise ValueError('pos_weight must be finite and positive.')
-        if self.selection_metrics is not None and (
-                not self.selection_metrics or len(set(self.selection_metrics)) != len(self.selection_metrics)):
-            raise ValueError('selection_metrics must contain distinct metric names.')
         if not 0 <= sparse_probability <= 1:
             raise ValueError('sparse_probability must be in [0, 1].')
         if user_feature_dim % 4:
@@ -48,7 +36,7 @@ class TailProxyAttack(AttackModel):
         self.classifier = nn.Sequential(
             nn.Dropout(dropout), nn.Linear(hidden_dim + (hidden_dim // 2 if semantic_dim else 0), hidden_dim),
             nn.LeakyReLU(.2), nn.Dropout(dropout), nn.Linear(hidden_dim, 1))
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.pos_weight))
+        self.loss_fn = nn.BCEWithLogitsLoss()
 
     def endpoint_features(self, users, data, sparse_mask=None):
         blocks = data.user_features[users].reshape(*users.shape, 4, -1).clone()
@@ -102,27 +90,16 @@ class TailProxyAttack(AttackModel):
     def train_model(self, *, data, tail_ratio, writer, train_batch_size, val_batch_size,
                     negative_ratio, num_epochs, optimizer, metrics, early_stopping):
         train_dataset = TrainAttackDataset(data, negative_ratio)
-        if self.balanced_batches:
-            sampler = BalancedAttackBatchSampler(
-                train_dataset, train_batch_size, merge_small_tail=self.merge_small_tail)
-            train_loader = DataLoader(train_dataset, batch_sampler=sampler)
-            logging.info('TailProxyAttack balanced batches: merge_small_tail=%s steps=%d last_batch_size=%d',
-                         self.merge_small_tail, len(sampler),
-                         2 * sampler.positive_batch_sizes[-1] if len(sampler) else 0)
-        else:
-            train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
+        sampler = BalancedAttackBatchSampler(train_dataset, train_batch_size)
+        train_loader = DataLoader(train_dataset, batch_sampler=sampler)
+        logging.info('TailProxyAttack balanced batches: steps=%d last_batch_size=%d',
+                     len(sampler), 2 * sampler.positive_batch_sizes[-1] if len(sampler) else 0)
         if not len(train_loader):
             raise ValueError('TailProxyAttack requires nonempty training data.')
         val_loader = DataLoader(EvalAttackDataset(data, split='val'), batch_size=val_batch_size, shuffle=False)
         opt = instantiate(optimizer, params=self.parameters())
         metrics = instantiate(metrics)
         metric_names = [type(metric).__name__.removeprefix('Binary') for metric in metrics]
-        selection_names = self.selection_metrics if self.selection_metrics is not None else metric_names
-        if not selection_names or any(metric_names.count(name) != 1 for name in selection_names):
-            raise ValueError(f'Selection metrics {selection_names} must occur once in validation metrics {metric_names}.')
-        selection_indices = [metric_names.index(name) for name in selection_names]
-        logging.info('TailProxyAttack training: pos_weight=%s optimizer=%s selection_metrics=%s',
-                     self.pos_weight, opt, selection_names)
         stop = instantiate(early_stopping, model=self)
         started = time.monotonic()
         head, tail = head_tail_split(data.num_users, data.target_social_edge_index, tail_ratio)
@@ -160,7 +137,7 @@ class TailProxyAttack(AttackModel):
             self.eval()
             values = compute_attack_metrics(data.device,
                 lambda u, v: self.predict(torch.stack([u, v]), data), metrics, val_loader, head, tail)
-            selection_score = sum(values[0][index] for index in selection_indices)
+            selection_score = sum(values[0])
             self.training_diagnostics.append(dict(epoch=epoch, selection_score=selection_score,
                                                   validation=dict(zip(metric_names, values[0])), **counts))
             logging.info('TailProxyAttack epoch=%d loss=%.6f validation=%s sparse=%s',
@@ -176,7 +153,7 @@ class TailProxyAttack(AttackModel):
         self.eval()
         self.training_summary = dict(max_epochs=num_epochs, actual_epochs=len(self.training_diagnostics),
             best_epoch=stop.best_epoch, best_metric=stop.best_metric,
-            selection_metrics=list(selection_names),
+            selection_metrics=metric_names,
             stop_reason='early_stopping' if stop.counter >= stop.patience else 'epoch_limit',
             elapsed_seconds=time.monotonic() - started)
 
@@ -191,8 +168,7 @@ class TailProxyAttack(AttackModel):
     def __repr__(self):
         settings = {key: getattr(self, key) for key in (
             'user_feature_dim', 'num_quantizers', 'rvq_enabled', 'normalize_features', 'code_matching',
-            'idf_pair_signal', 'sparse_training', 'sparse_probability', 'hidden_dim', 'dropout',
-            'pos_weight', 'balanced_batches', 'merge_small_tail', 'selection_metrics')}
+            'idf_pair_signal', 'sparse_training', 'sparse_probability', 'hidden_dim', 'dropout')}
         return f'{type(self).__name__}({settings}, fingerprint={model_fingerprint(self)})'
 
 

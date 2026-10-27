@@ -1,14 +1,31 @@
-defaults:
-  - smia
-  - _self_
-
 name: TailProxyShadow
-revision: tail-proxy-v1
+revision: tail-proxy-e100-v3
 attribute:
   _target_: sralt.shadow.model.tail_proxy.TailProxyShadow
+  embed_dim: 64
+  num_layers: 2
+  decay: 0.01
   num_quantizers: 8
   codebook_size: 256
   commitment_weight: 0.01
   idf_weighting: true
   rvq_enabled: true
   semantic_augmentation: true
+train:
+  train_batch_size: 8192
+  val_batch_size: 2048
+  val_num_negatives: 999
+  num_epochs: 100
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.01
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 10
+    greater_is_better: true
+    epsilon: 1e-5

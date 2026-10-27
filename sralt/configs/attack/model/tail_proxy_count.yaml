@@ -3,6 +3,6 @@ defaults:
   - _self_
 
 name: TailProxyCountAttack
-revision: tail-proxy-count-auc-f1-balanced-v2
+revision: tail-proxy-count-bce1-balanced-v4
 attribute:
   _target_: sralt.attack.model.tail_proxy.TailProxyCountAttack

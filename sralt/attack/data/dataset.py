@@ -89,13 +89,13 @@ class TrainAttackDataset(Dataset):
 class BalancedAttackBatchSampler(Sampler[list[int]]):
     """Use every sample once per epoch, with equal classes in each batch.
 
-    By default a tail smaller than half the nominal batch size is merged into
-    the preceding batch; merge_small_tail=False retains that balanced tail.
+    A tail smaller than half the nominal batch size is merged into
+    the preceding batch.
     Negative edges are still resampled by the dataset once
     per full traversal, using only training positives for exclusion.
     """
 
-    def __init__(self, dataset: TrainAttackDataset, batch_size: int, merge_small_tail: bool = True):
+    def __init__(self, dataset: TrainAttackDataset, batch_size: int):
         self.num_positive = dataset.pos_edge_index.size(1)
         if dataset.num_negatives != self.num_positive or batch_size < 2 or batch_size % 2:
             raise ValueError('Balanced attack batches require 1:1 classes and an even batch size >= 2.')
@@ -104,7 +104,7 @@ class BalancedAttackBatchSampler(Sampler[list[int]]):
         full, remainder = divmod(self.num_positive, half_batch_size)
         self.positive_batch_sizes = [half_batch_size] * full
         if remainder:
-            if merge_small_tail and self.positive_batch_sizes and 2 * remainder < half_batch_size:
+            if self.positive_batch_sizes and 2 * remainder < half_batch_size:
                 self.positive_batch_sizes[-1] += remainder
             else:
                 self.positive_batch_sizes.append(remainder)

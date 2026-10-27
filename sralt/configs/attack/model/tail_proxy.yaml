@@ -1,5 +1,5 @@
 name: TailProxyAttack
-revision: tail-proxy-auc-f1-balanced-v2
+revision: tail-proxy-bce1-balanced-v4
 attribute:
   _target_: sralt.attack.model.tail_proxy.TailProxyAttack
   num_quantizers: ${shadow.model.attribute.num_quantizers}
@@ -11,10 +11,6 @@ attribute:
   sparse_probability: 0.5
   hidden_dim: 128
   dropout: 0.2
-  pos_weight: 10.0
-  balanced_batches: true
-  merge_small_tail: true
-  selection_metrics: [AUROC, F1Score]
 train:
   train_batch_size: 512
   val_batch_size: 2048
@@ -30,8 +26,6 @@ train:
       task: binary
     - _target_: torchmetrics.F1Score
       task: binary
-    - _target_: sralt.utils.TPRatFPR
-      target_fpr: 0.01
   early_stopping:
     _target_: sralt.utils.EarlyStopping
     patience: 5

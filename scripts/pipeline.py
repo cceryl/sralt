@@ -203,13 +203,7 @@ def main(config: DictConfig):
 
     output_dir = Path(HydraConfig.get().runtime.output_dir)
     save_attack_report(attack_data, attack_model, output_dir)
-    torch.save(target_data, output_dir / 'target_data.pth')
-    torch.save(shadow_data, output_dir / 'shadow_data.pth')
-    torch.save(attack_data, output_dir / 'attack_data.pth')
-    torch.save(target_model.state_dict(), output_dir / 'target_model.pth')
-    if shadow_model is not None:
-        torch.save(shadow_model.state_dict(), output_dir / 'shadow_model.pth')
-    torch.save(attack_model.state_dict(), output_dir / 'attack_model.pth')
+    # Stage data and model persistence belongs to load_* and disk_cache.
 
     writer.close()
 

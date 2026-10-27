@@ -1,9 +1,0 @@
-[
-  {"name": "native", "model": "tail_proxy_native", "budgets": [10, 300], "overrides": []},
-  {"name": "pos_weight", "model": "tail_proxy_native", "budgets": [10], "overrides": ["attack.model.attribute.pos_weight=10.0"]},
-  {"name": "optimizer", "model": "tail_proxy_native", "budgets": [10], "overrides": ["attack.model.train.optimizer.weight_decay=0.0001", "attack.model.train.optimizer.grad_clip_norm=1.0"]},
-  {"name": "balanced", "model": "tail_proxy_native", "budgets": [10], "overrides": ["attack.model.attribute.balanced_batches=true", "attack.model.attribute.merge_small_tail=false"]},
-  {"name": "balanced_tail", "model": "tail_proxy_native", "budgets": [10], "overrides": ["attack.model.attribute.balanced_batches=true", "attack.model.attribute.merge_small_tail=true"]},
-  {"name": "selection", "model": "tail_proxy_native", "budgets": [10], "overrides": ["attack.model.attribute.selection_metrics=[AUROC,F1Score]"]},
-  {"name": "aligned", "model": "tail_proxy", "budgets": [10, 300], "overrides": []}
-]

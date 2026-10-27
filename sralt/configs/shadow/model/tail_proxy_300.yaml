@@ -1,7 +1,0 @@
-defaults:
-  - tail_proxy_10
-  - _self_
-
-revision: tail-proxy-shadow-e300-v2
-train:
-  num_epochs: 300
