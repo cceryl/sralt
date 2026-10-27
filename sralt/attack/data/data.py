@@ -173,7 +173,12 @@ class AttackData:
         )
         # Keep the legacy key identical when no structured payload is supplied.
         if getattr(self, 'side_features', None) is not None:
-            return key + (self.side_features,)
+            key += (self.side_features,)
+        # Opt-in shared public-validation candidates are part of training identity.
+        # Hidden evaluation pairs must never affect model cache/training identity.
+        validation = getattr(self, 'fixed_eval_pairs', {}).get('val')
+        if validation is not None:
+            key += ('fixed-public-validation-v1', validation)
         return key
 
 

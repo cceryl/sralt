@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 import torch
 import torch.nn as nn
@@ -104,9 +105,12 @@ class TailProxyShadow(ShadowModel):
         opt = instantiate(optimizer, params=module.parameters())
         # Includes RVQ EMA buffers, rather than checkpointing only the embedding table.
         stop = instantiate(early_stopping, model=self)
+        started = time.monotonic()
+        history, steps = [], 0
         for epoch in range(1, num_epochs + 1):
             self.train()
             total_loss, count = 0., 0
+            components = dict(bpr=0., raw_l2=0., weighted_l2=0., commitment=0.)
             for users, positive, negative in train_loader:
                 opt.zero_grad()
                 if branch == 'behavioral':
@@ -117,16 +121,22 @@ class TailProxyShadow(ShadowModel):
                 neg = (embeds[users] * embeds[negative]).sum(-1)
                 nodes = torch.cat([users, positive, negative])
                 reg = module.embedding(nodes).square().sum() / users.numel()
-                loss = nn.functional.softplus(neg - pos).mean() + self.decay * reg + commitment
+                bpr = nn.functional.softplus(neg - pos).mean()
+                loss = bpr + self.decay * reg + commitment
                 loss.backward()
                 opt.step()
                 total_loss += loss.item() * users.numel()
                 count += users.numel()
+                steps += 1
+                for name, value in zip(components, (bpr, reg, self.decay * reg, commitment)):
+                    components[name] += float(value.detach() if torch.is_tensor(value) else value) * users.numel()
             self.eval()
             with torch.no_grad():
                 embeds = self.behavior(adj, edges, idf)[0] if branch == 'behavioral' else module(adj)
                 values = compute_recommendation_metrics(embeds, metrics, val_loader)
             logging.info('TailProxyShadow %s epoch=%d loss=%.6f validation=%s', branch, epoch, total_loss / count, values)
+            history.append(dict(epoch=epoch, loss=total_loss / count, validation=values,
+                                **{name: value / count for name, value in components.items()}))
             if writer is not None:
                 writer.add_scalar(f'TailProxyShadow/{branch}/Loss/train', total_loss / count, epoch)
                 for metric, value in zip(metrics, values):
@@ -135,6 +145,12 @@ class TailProxyShadow(ShadowModel):
                 break
         stop.load_best_state()
         self.eval()
+        if not hasattr(self, 'branch_training'):
+            self.branch_training = {}
+        self.branch_training[branch] = dict(max_epochs=num_epochs, actual_epochs=len(history),
+            best_epoch=stop.best_epoch, best_metric=stop.best_metric, steps=steps,
+            stop_reason='early_stopping' if stop.counter >= stop.patience else 'epoch_limit',
+            elapsed_seconds=time.monotonic() - started, history=history)
 
     def train_model(self, *, data, writer, train_batch_size, val_batch_size, val_num_negatives,
                     num_epochs, optimizer, metrics, early_stopping):

@@ -1,5 +1,5 @@
 name: TailProxyAttack
-revision: tail-proxy-v1
+revision: tail-proxy-auc-f1-balanced-v2
 attribute:
   _target_: sralt.attack.model.tail_proxy.TailProxyAttack
   num_quantizers: ${shadow.model.attribute.num_quantizers}
@@ -11,6 +11,10 @@ attribute:
   sparse_probability: 0.5
   hidden_dim: 128
   dropout: 0.2
+  pos_weight: 10.0
+  balanced_batches: true
+  merge_small_tail: true
+  selection_metrics: [AUROC, F1Score]
 train:
   train_batch_size: 512
   val_batch_size: 2048
@@ -19,8 +23,8 @@ train:
   optimizer:
     _target_: sralt.utils.train.AdamWithGradientClipping
     lr: 0.001
-    weight_decay: 0.0
-    grad_clip_norm: 5.0
+    weight_decay: 0.0001
+    grad_clip_norm: 1.0
   metrics:
     - _target_: torchmetrics.AUROC
       task: binary

@@ -1,0 +1,39 @@
+name: TailProxyAttack
+revision: tail-proxy-native-v1
+attribute:
+  _target_: sralt.attack.model.tail_proxy.TailProxyAttack
+  num_quantizers: ${shadow.model.attribute.num_quantizers}
+  rvq_enabled: ${shadow.model.attribute.rvq_enabled}
+  normalize_features: true
+  code_matching: true
+  idf_pair_signal: true
+  sparse_training: true
+  sparse_probability: 0.5
+  hidden_dim: 128
+  dropout: 0.2
+  pos_weight: 1.0
+  balanced_batches: false
+  merge_small_tail: true
+  selection_metrics: null
+train:
+  train_batch_size: 512
+  val_batch_size: 2048
+  negative_ratio: 1.0
+  num_epochs: 50
+  optimizer:
+    _target_: sralt.utils.train.AdamWithGradientClipping
+    lr: 0.001
+    weight_decay: 0.0
+    grad_clip_norm: 5.0
+  metrics:
+    - _target_: torchmetrics.AUROC
+      task: binary
+    - _target_: torchmetrics.F1Score
+      task: binary
+    - _target_: sralt.utils.TPRatFPR
+      target_fpr: 0.01
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 5
+    greater_is_better: true
+    epsilon: 1e-5
