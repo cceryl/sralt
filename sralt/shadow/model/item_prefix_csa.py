@@ -186,6 +186,9 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         self.graph_mode, self.fusion = graph_mode, fusion
         self.random_user_graph, self.fixed_user_codes = random_user_graph, fixed_user_codes
         self.quantized_scoring = quantized_scoring
+        # The parent assigns this field during initialization; use the same
+        # writable interface, then namespace it for the dual-RVQ encoder.
+        self.encoder_cache_group = f'item_prefix_csa_{self.rvq_training}_{self.quantized_scoring}'
         self.user_loss_weight, self.item_loss_weight = user_loss_weight, item_loss_weight
         self.behavioral_branch = (DualQuantizedBehaviorBranch(**self.behavior_attributes())
             if rvq_training == 'end_to_end' else GraphBranch(num_users + num_items, embed_dim, num_layers))
@@ -194,10 +197,6 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         self.social_branch = self.new_social_branch()
         self.register_buffer('train_user_codes', torch.empty(0, user_num_quantizers, dtype=torch.long))
         self.register_buffer('user_permutations', torch.empty(0, user_num_quantizers, dtype=torch.long))
-
-    @property
-    def encoder_cache_group(self):
-        return f'item_prefix_csa_{self.rvq_training}_{self.quantized_scoring}'
 
     def behavior_attributes(self):
         return {key: getattr(self, key) for key in ('num_users', 'num_items', 'embed_dim', 'num_layers',
