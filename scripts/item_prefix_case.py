@@ -4,7 +4,7 @@
 import argparse
 from pathlib import Path
 
-from item_prefix_recipe import EXPERIMENT_REVISION, MAIN, OVERRIDES
+from item_prefix_recipe import experiment_revision, MAIN, OVERRIDES
 from tail_proxy_case import configuration as original_configuration, run
 from hydra import compose, initialize_config_module
 
@@ -13,7 +13,8 @@ def configuration(args, condition):
     if condition in ('baseline', 'tail_proxy'):
         return original_configuration(args, condition)
     overrides = [f'target/data={args.dataset}', f'target/model={args.target}',
-                 'shadow/model=item_prefix', 'attack/model=item_prefix', f'seed={args.seed}',
+                 f'shadow/model={"item_prefix_rvq" if condition.startswith("rvq_") else "item_prefix"}',
+                 'attack/model=item_prefix', f'seed={args.seed}',
                  *OVERRIDES[condition]]
     with initialize_config_module(config_module='sralt.configs', version_base=None):
         return compose(config_name='config', overrides=overrides)
@@ -25,13 +26,17 @@ def main():
     parser.add_argument('--dataset', choices=['ciao', 'flickr'], required=True)
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--expected-revision', help='scheduler-pinned experiment revision')
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--conditions', nargs='+', choices=['baseline', 'tail_proxy', *OVERRIDES], default=list(MAIN))
     args = parser.parse_args()
     if args.threads < 1:
         parser.error('threads must be positive')
-    run(args, conditions=args.conditions, experiment_revision=EXPERIMENT_REVISION,
+    revision = experiment_revision(args.conditions)
+    if args.expected_revision is not None and args.expected_revision != revision:
+        parser.error(f'Scheduler revision {args.expected_revision} differs from worker code {revision}; start a new batch.')
+    run(args, conditions=args.conditions, experiment_revision=revision,
         configuration_fn=configuration, group_shadow_by_config=True)
 
 

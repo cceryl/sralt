@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from run_restored_baseline import ROOT, now, write_json
 from summarize_tail_proxy import CONDITIONS, EXPERIMENT_REVISION, read_record, summarize
+from experiment_progress import add_progress_arguments, handle_progress_mode, print_progress
 
 
 def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
@@ -76,6 +77,7 @@ def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
     manifest.update(status='running', started_at=now())
     write_json(manifest_path, manifest)
     next_start = 0.
+    next_progress = 0.
     summarized = False
     try:
         while pending or active:
@@ -91,6 +93,7 @@ def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
                 next_start = time.monotonic() + 10.
                 write_json(manifest_path, manifest)
                 print(f'Start {case["output"]}: pid={process.pid}', flush=True)
+                next_progress = 0.
             for process, case in active[:]:
                 code = process.poll()
                 if code is None:
@@ -107,6 +110,10 @@ def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
                 active.remove((process, case))
                 write_json(manifest_path, manifest)
                 print(f'{case["output"]}: {case["status"]}', flush=True)
+                next_progress = 0.
+            if time.monotonic() >= next_progress:
+                print_progress(run_dir, manifest)
+                next_progress = time.monotonic() + args.progress_interval
             if pending or active:
                 time.sleep(.5)
         success = summarizer(run_dir)
@@ -135,6 +142,7 @@ def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
             manifest['status'] = 'interrupted'
         manifest['finished_at'] = now()
         write_json(manifest_path, manifest)
+        print_progress(run_dir, manifest)
         if not summarized:
             summarizer(run_dir)
 
@@ -151,7 +159,11 @@ def main():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--summarize-only', action='store_true')
     parser.add_argument('--run-dir', type=Path)
+    add_progress_arguments(parser)
     args = parser.parse_args()
+    progress_result = handle_progress_mode(args, parser)
+    if progress_result is not None:
+        return progress_result
     if args.summarize_only:
         if not args.run_dir:
             parser.error('--summarize-only requires --run-dir')

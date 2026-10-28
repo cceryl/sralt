@@ -140,6 +140,7 @@ def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
                 raise ValueError(f'Resume Shadow settings changed: {name}')
         if name in result['results']:
             continue
+        logging.info('Starting condition %s [%d/%d]', name, conditions.index(name) + 1, len(conditions))
         budget = None if name == 'baseline' else int(stage_cfg.shadow.model.train.num_epochs)
         shadow.to(device)
         target.to(device)
@@ -154,9 +155,16 @@ def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
                 from sralt.utils import model_fingerprint
                 shared = dict(behavior=model_fingerprint(shadow_model.behavioral_branch),
                               rvq=model_fingerprint(shadow_model.rvq))
-                if result.get('shared_item_encoder', shared) != shared:
+                if hasattr(shadow_model, 'user_rvq'):
+                    shared['user_rvq'] = model_fingerprint(shadow_model.user_rvq)
+                shared_key = ('shared_item_encoder_end_to_end'
+                              if getattr(shadow_model, 'rvq_training', 'offline') == 'end_to_end'
+                              else 'shared_item_encoder')
+                if hasattr(shadow_model, 'encoder_cache_group'):
+                    shared_key = 'shared_encoder_' + shadow_model.encoder_cache_group
+                if result.get(shared_key, shared) != shared:
                     raise ValueError('Item-prefix ablations did not reuse the same behavior encoder and RVQ')
-                result['shared_item_encoder'] = shared
+                result[shared_key] = shared
         shadow_scores = (None if group_shadow_by_config and key in result['shadow'] else
                          test_shadow_model(**common, device=device, model=shadow_model, data=shadow, config=stage_cfg.shadow.test))
         data = load_attack_data(**common, target_data=target, shadow_data=shadow, shadow_model=shadow_model,

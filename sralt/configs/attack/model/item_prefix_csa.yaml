@@ -1,0 +1,10 @@
+defaults:
+  - item_prefix
+  - _self_
+
+name: ItemPrefixCSAAttack
+revision: item-prefix-csa-attack-v1
+attribute:
+  _target_: sralt.attack.model.item_prefix_csa.ItemPrefixCSAAttack
+  user_num_quantizers: ${shadow.model.attribute.user_num_quantizers}
+  user_matching: true

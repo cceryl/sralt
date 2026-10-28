@@ -100,11 +100,13 @@ class TailProxyShadow(ShadowModel):
                                     self.num_users + self.num_items + self.num_codes)
 
     def _train_branch(self, branch, adj, edges, idf, train_loader, val_loader,
-                      num_epochs, optimizer, metrics, early_stopping, writer):
+                      num_epochs, optimizer, metrics, early_stopping, writer, *, fixed_epochs=False):
         module = self.behavioral_branch if branch == 'behavioral' else self.social_branch
         opt = instantiate(optimizer, params=module.parameters())
         # Includes RVQ EMA buffers, rather than checkpointing only the embedding table.
         stop = instantiate(early_stopping, model=self)
+        if fixed_epochs:
+            stop.patience = num_epochs + 1
         started = time.monotonic()
         history, steps = [], 0
         for epoch in range(1, num_epochs + 1):
@@ -141,15 +143,18 @@ class TailProxyShadow(ShadowModel):
                 writer.add_scalar(f'TailProxyShadow/{branch}/Loss/train', total_loss / count, epoch)
                 for metric, value in zip(metrics, values):
                     writer.add_scalar(f'TailProxyShadow/{branch}/{type(metric).__name__}/val', value, epoch)
-            if stop.step(sum(values)):
+            if stop.step(sum(values)) and not fixed_epochs:
                 break
-        stop.load_best_state()
+        if not fixed_epochs:
+            stop.load_best_state()
         self.eval()
         if not hasattr(self, 'branch_training'):
             self.branch_training = {}
         self.branch_training[branch] = dict(max_epochs=num_epochs, actual_epochs=len(history),
             best_epoch=stop.best_epoch, best_metric=stop.best_metric, steps=steps,
-            stop_reason='early_stopping' if stop.counter >= stop.patience else 'epoch_limit',
+            selected_epoch=len(history) if fixed_epochs else stop.best_epoch,
+            selection='last_epoch' if fixed_epochs else 'validation_best',
+            stop_reason='fixed_epochs' if fixed_epochs else ('early_stopping' if stop.counter >= stop.patience else 'epoch_limit'),
             elapsed_seconds=time.monotonic() - started, history=history)
 
     def train_model(self, *, data, writer, train_batch_size, val_batch_size, val_num_negatives,

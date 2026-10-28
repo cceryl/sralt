@@ -12,10 +12,11 @@ import signal
 import sys
 from zoneinfo import ZoneInfo
 
-from item_prefix_recipe import EXPERIMENT_REVISION, SUITES, contrasts
+from item_prefix_recipe import experiment_revision, SUITES, contrasts
 from run_tail_proxy import run
 from run_restored_baseline import ROOT
 from summarize_tail_proxy import summarize
+from experiment_progress import add_progress_arguments, handle_progress_mode
 
 
 def main():
@@ -31,7 +32,11 @@ def main():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--summarize-only', action='store_true')
     parser.add_argument('--run-dir', type=Path)
+    add_progress_arguments(parser)
     args = parser.parse_args()
+    progress_result = handle_progress_mode(args, parser)
+    if progress_result is not None:
+        return progress_result
     if args.summarize_only:
         if not args.run_dir:
             parser.error('--summarize-only requires --run-dir')
@@ -47,12 +52,13 @@ def main():
     conditions = SUITES[args.suite]
     previous = signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:
-        return run(args, conditions=conditions, experiment_revision=EXPERIMENT_REVISION,
-                   worker_name='item_prefix_case.py', worker_arguments=['--conditions', *conditions],
+        return run(args, conditions=conditions, experiment_revision=experiment_revision(conditions),
+                   worker_name='item_prefix_case.py',
+                   worker_arguments=['--expected-revision', experiment_revision(conditions), '--conditions', *conditions],
                    identity_extra=dict(suite=args.suite, conditions=list(conditions)),
                    metadata=dict(contrasts=contrasts(conditions), save_paired_cases=True,
                                  report_title='# Item Prefix 阶段B实验结果',
-                                 method_description='若包含baseline，沿用已接受SMIA/MLP；TailProxy为固定100轮原Full。所有ItemPrefix消融共享缓存行为encoder/RVQ。最终CPU共用固定隐藏用户对及分组；公开验证All选模，TPR不参与选模。',
+                                 method_description='若包含baseline，沿用已接受SMIA/MLP；TailProxy为固定100轮原Full。默认prefix原边权×0.1，图权重变体按配置覆盖。离线消融共享缓存行为encoder/RVQ；端到端组使用库ResidualVQ，按EMA/commitment参数分别缓存联合Behavior/RVQ。固定轮数保留Social最后一轮，其余按公开推荐验证选模。最终CPU共用固定隐藏用户对及分组；公开验证All选模，TPR不参与选模。',
                                  contrast_description='差值方向见paired.csv的left−right；逐seed见paired_cases.csv。主比较与消融分别解释，不将阶段A结果计入本批完成数。'))
     except KeyboardInterrupt:
         return 130

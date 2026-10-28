@@ -12,6 +12,7 @@ attribute:
   semantic_augmentation: true
   frequency_weighting: true
   proxy_kind: rvq
+  prefix_edge_scale: 0.1
 train:
   seed: ${seed}
   deterministic: ${deterministic}

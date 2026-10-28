@@ -1,0 +1,10 @@
+defaults:
+  - item_prefix
+  - _self_
+
+revision: item-prefix-joint-library-v3
+attribute:
+  rvq_training: end_to_end
+  rvq_ema_update: false
+  rvq_commitment_weight: 0.25
+  rvq_ema_decay: 0.8

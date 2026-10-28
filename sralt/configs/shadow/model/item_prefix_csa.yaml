@@ -1,0 +1,42 @@
+name: ItemPrefixCSAShadow
+revision: item-prefix-csa-shadow-v1
+attribute:
+  _target_: sralt.shadow.model.item_prefix_csa.ItemPrefixCSAShadow
+  embed_dim: 64
+  num_layers: 2
+  decay: 0.01
+  num_quantizers: 8
+  codebook_size: 256
+  levels: [8]
+  user_num_quantizers: 8
+  user_codebook_size: 256
+  prefix_augmentation: true
+  user_augmentation: true
+  graph_mode: dual
+  fusion: linear
+  random_user_graph: false
+  fixed_user_codes: false
+  quantized_scoring: both
+  user_loss_weight: 1.0
+  item_loss_weight: 1.0
+  rvq_training: end_to_end
+train:
+  seed: ${seed}
+  deterministic: ${deterministic}
+  train_batch_size: 8192
+  val_batch_size: 2048
+  val_num_negatives: 999
+  num_epochs: 100
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.01
+  metrics:
+    - _target_: torch_geometric.metrics.LinkPredRecall
+      k: 10
+    - _target_: torch_geometric.metrics.LinkPredNDCG
+      k: 10
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 10
+    greater_is_better: true
+    epsilon: 1e-5
