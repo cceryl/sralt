@@ -1,5 +1,5 @@
 name: ItemPrefixShadow
-revision: item-prefix-frozen-e100-v1
+revision: item-prefix-joint-library-v3
 attribute:
   _target_: sralt.shadow.model.item_prefix.ItemPrefixShadow
   embed_dim: 64
@@ -13,6 +13,10 @@ attribute:
   frequency_weighting: true
   proxy_kind: rvq
   prefix_edge_scale: 0.1
+  rvq_training: end_to_end
+  rvq_ema_update: false
+  rvq_commitment_weight: 0.25
+  rvq_ema_decay: 0.8
 train:
   seed: ${seed}
   deterministic: ${deterministic}

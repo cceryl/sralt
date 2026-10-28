@@ -177,9 +177,10 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
                  user_codebook_size=256, prefix_augmentation=True, user_augmentation=True,
                  graph_mode='dual', fusion='linear', random_user_graph=False,
                  fixed_user_codes=False, quantized_scoring='both', user_loss_weight=1., item_loss_weight=1.,
-                 rvq_training='end_to_end'):
+                 rvq_training='end_to_end', prefix_edge_scale=.1):
         super().__init__(num_users, num_items, embed_dim, num_layers, decay,
-                         num_quantizers, codebook_size, levels, rvq_training=rvq_training)
+                         num_quantizers, codebook_size, levels, rvq_training=rvq_training,
+                         prefix_edge_scale=prefix_edge_scale)
         self.user_num_quantizers, self.user_codebook_size = user_num_quantizers, user_codebook_size
         self.prefix_augmentation, self.user_augmentation = prefix_augmentation, user_augmentation
         self.graph_mode, self.fusion = graph_mode, fusion
@@ -225,6 +226,7 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         p = len(self.prefix_levels)
         if self.prefix_augmentation:
             pe, pw = semantic_links(prefix_ids, self.prefix_information, n)
+            pw = pw * self.prefix_edge_scale
         else:
             pe, pw = public.new_empty(2, 0), self.prefix_information.new_empty(0)
         codes = user_codes
@@ -374,13 +376,14 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         source_users = pe[0] < self.num_users
         prefix_degree = public_degree.new_zeros(self.num_users)
         if prefix_active:
-            prefix_degree.index_add_(0, pe[0, source_users], pw[source_users])
+            prefix_degree.index_add_(0, pe[0, source_users], pw[source_users] * self.prefix_edge_scale)
         code_degree = public_degree.new_full((self.num_users,), self.user_num_quantizers if user_active else 0)
         def semantic_share(degree):
             total = public_degree + degree
             return float((degree / total.clamp_min(1e-12))[total > 0].mean()) if (total > 0).any() else 0.
         self.last_diagnostics = dict(quantization=self.quantization_summary, graph_mode=self.graph_mode,
             fusion=self.fusion, prefix_augmentation=self.prefix_augmentation, user_augmentation=self.user_augmentation,
+            prefix_edge_scale=self.prefix_edge_scale,
             random_user_graph=self.random_user_graph, user_code_view='train' if self.fixed_user_codes else 'full-query',
             user_code_change_per_level=(full_codes != self.train_user_codes).float().mean(0).tolist(),
             user_code_active_per_level=(frequency.reshape(self.user_num_quantizers, -1) > 0).sum(1).tolist(),
@@ -404,6 +407,6 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
     def __repr__(self):
         settings = {key: getattr(self, key) for key in ('num_users', 'num_items', 'embed_dim', 'num_layers', 'decay',
             'num_quantizers', 'codebook_size', 'levels', 'user_num_quantizers', 'user_codebook_size',
-            'prefix_augmentation', 'user_augmentation', 'graph_mode', 'fusion', 'random_user_graph',
+            'prefix_augmentation', 'user_augmentation', 'prefix_edge_scale', 'graph_mode', 'fusion', 'random_user_graph',
             'fixed_user_codes', 'quantized_scoring', 'user_loss_weight', 'item_loss_weight', 'rvq_training')}
         return f'ItemPrefixCSAShadow({settings}, fingerprint={model_fingerprint(self)})'

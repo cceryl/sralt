@@ -1,6 +1,6 @@
 """ItemPrefixCSA experiment identities and one-factor ablations (stdlib only)."""
 
-EXPERIMENT_REVISION = 'item-prefix-csa-experiment-v1'
+EXPERIMENT_REVISION = 'item-prefix-csa-experiment-prefix10-v2'
 OVERRIDES = {
     'full': (),
     'no_user_graph': ('shadow.model.attribute.user_augmentation=false',),

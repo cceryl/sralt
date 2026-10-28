@@ -12,8 +12,9 @@ from hydra import compose, initialize_config_module
 def configuration(args, condition):
     if condition in ('baseline', 'tail_proxy'):
         return original_configuration(args, condition)
+    # Pin the existing v3 offline controls while the application default is joint.
     overrides = [f'target/data={args.dataset}', f'target/model={args.target}',
-                 f'shadow/model={"item_prefix_rvq" if condition.startswith("rvq_") else "item_prefix"}',
+                 f'shadow/model={"item_prefix_rvq" if condition.startswith("rvq_") else "item_prefix_offline"}',
                  'attack/model=item_prefix', f'seed={args.seed}',
                  *OVERRIDES[condition]]
     with initialize_config_module(config_module='sralt.configs', version_base=None):

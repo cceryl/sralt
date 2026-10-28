@@ -1,5 +1,5 @@
 name: ItemPrefixCSAShadow
-revision: item-prefix-csa-shadow-v1
+revision: item-prefix-csa-shadow-prefix10-v2
 attribute:
   _target_: sralt.shadow.model.item_prefix_csa.ItemPrefixCSAShadow
   embed_dim: 64
@@ -11,6 +11,7 @@ attribute:
   user_num_quantizers: 8
   user_codebook_size: 256
   prefix_augmentation: true
+  prefix_edge_scale: 0.1
   user_augmentation: true
   graph_mode: dual
   fusion: linear
