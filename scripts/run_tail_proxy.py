@@ -19,10 +19,13 @@ from run_restored_baseline import ROOT, now, write_json
 from summarize_tail_proxy import CONDITIONS, EXPERIMENT_REVISION, read_record, summarize
 
 
-def run(args):
+def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
+        worker_name='tail_proxy_case.py', worker_arguments=(), metadata=None,
+        identity_extra=None, summarizer=summarize):
     run_dir = (ROOT / args.run_dir).resolve()
-    identity = dict(targets=args.targets, datasets=args.datasets, seeds=args.seeds, experiment_revision=EXPERIMENT_REVISION,
+    identity = dict(targets=args.targets, datasets=args.datasets, seeds=args.seeds, experiment_revision=experiment_revision,
                     cpu=args.cpu, threads=args.threads)
+    identity.update(identity_extra or {})
     if args.resume:
         manifest = json.loads((run_dir / 'manifest.json').read_text())
         if manifest['identity'] != identity:
@@ -31,27 +34,29 @@ def run(args):
             valid = case['status'] == 'completed'
             if valid:
                 try:
-                    for condition in CONDITIONS:
-                        read_record(run_dir, case, condition)
+                    for condition in conditions:
+                        read_record(run_dir, case, condition, expected_revision=experiment_revision)
                 except (OSError, ValueError, KeyError, TypeError):
                     valid = False
             if not valid:
                 case['status'] = 'pending'
-                case['command'][1] = str(ROOT / 'scripts/tail_proxy_case.py')
+                case['command'][1] = str(ROOT / 'scripts' / worker_name)
     else:
         run_dir.mkdir(parents=True, exist_ok=False)
         manifest = dict(schema=3, created_at=now(), python=sys.executable, identity=identity,
                         targets=args.targets, datasets=args.datasets, seeds=args.seeds, jobs=args.jobs,
-                        launch_interval_seconds=10, status='planned', conditions=list(CONDITIONS), cases=[])
+                        launch_interval_seconds=10, status='planned', conditions=list(conditions), cases=[])
+        manifest.update(metadata or {})
         # Visit all four seed-42 combinations before later seeds.
         for seed in args.seeds:
             for target in args.targets:
                 for dataset in args.datasets:
                     output = f'{target}/{dataset}/seed-{seed}'
-                    command = [sys.executable, str(ROOT / 'scripts/tail_proxy_case.py'),
+                    command = [sys.executable, str(ROOT / 'scripts' / worker_name),
                                '--target', target, '--dataset', dataset, '--seed', str(seed),
                                '--output', str(run_dir / output),
                                '--threads', str(args.threads)]
+                    command.extend(worker_arguments)
                     if args.cpu:
                         command.append('--cpu')
                     manifest['cases'].append(dict(target=target, dataset=dataset, seed=seed, output=output,
@@ -59,7 +64,7 @@ def run(args):
     manifest_path = run_dir / 'manifest.json'
     manifest['jobs'] = args.jobs
     write_json(manifest_path, manifest)
-    count = len(manifest['cases']) * len(CONDITIONS)
+    count = len(manifest['cases']) * len(conditions)
     if args.plan_only:
         print(f'Plan: {len(manifest["cases"])} workers, {count} evaluations; {manifest_path}')
         return 0
@@ -93,8 +98,8 @@ def run(args):
                 complete = False
                 if code == 0:
                     try:
-                        for condition in CONDITIONS:
-                            read_record(run_dir, case, condition)
+                        for condition in conditions:
+                            read_record(run_dir, case, condition, expected_revision=experiment_revision)
                         complete = True
                     except (OSError, ValueError, KeyError, TypeError):
                         pass
@@ -104,7 +109,7 @@ def run(args):
                 print(f'{case["output"]}: {case["status"]}', flush=True)
             if pending or active:
                 time.sleep(.5)
-        success = summarize(run_dir)
+        success = summarizer(run_dir)
         summarized = True
         manifest['status'] = 'completed' if success and all(c['status'] == 'completed' for c in manifest['cases']) else 'failed'
         return 0 if manifest['status'] == 'completed' else 1
@@ -131,7 +136,7 @@ def run(args):
         manifest['finished_at'] = now()
         write_json(manifest_path, manifest)
         if not summarized:
-            summarize(run_dir)
+            summarizer(run_dir)
 
 
 def main():

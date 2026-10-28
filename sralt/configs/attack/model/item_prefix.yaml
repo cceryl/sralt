@@ -1,0 +1,31 @@
+name: ItemPrefixAttack
+revision: item-prefix-bce1-v1
+attribute:
+  _target_: sralt.attack.model.item_prefix.ItemPrefixAttack
+  prefix_levels: ${shadow.model.attribute.levels}
+  prefix_matching: true
+  normalize_features: true
+  sparse_training: true
+  sparse_probability: 0.5
+  hidden_dim: 128
+  dropout: 0.2
+train:
+  train_batch_size: 512
+  val_batch_size: 2048
+  negative_ratio: 1.0
+  num_epochs: 50
+  optimizer:
+    _target_: sralt.utils.train.AdamWithGradientClipping
+    lr: 0.001
+    weight_decay: 0.0001
+    grad_clip_norm: 1.0
+  metrics:
+    - _target_: torchmetrics.AUROC
+      task: binary
+    - _target_: torchmetrics.F1Score
+      task: binary
+  early_stopping:
+    _target_: sralt.utils.EarlyStopping
+    patience: 5
+    greater_is_better: true
+    epsilon: 1e-5

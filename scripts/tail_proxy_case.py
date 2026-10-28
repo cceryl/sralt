@@ -90,11 +90,12 @@ def short_training(info):
     return {name: value for name, value in info.items() if name != 'history'} if info else None
 
 
-def run(args):
+def run(args, *, conditions=CONDITIONS, experiment_revision=EXPERIMENT_REVISION,
+        configuration_fn=configuration, group_shadow_by_config=False):
     args.output.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', force=True)
     torch.set_num_threads(args.threads)
-    cfg = configuration(args, 'baseline')
+    cfg = configuration_fn(args, 'baseline')
     device = torch.device('cpu') if args.cpu else instantiate(cfg.device)
     common = dict(seed=args.seed, deterministic=cfg.deterministic)
     lock_dir = Path(tempfile.gettempdir()) / 'sralt-target-data-locks'
@@ -118,20 +119,25 @@ def run(args):
                          tail_ratio=float(cfg.attack.tail_ratio), deterministic=bool(cfg.deterministic))
     if path.exists():
         result = json.loads(path.read_text())
-        if (result['experiment_revision'] != EXPERIMENT_REVISION
+        if (result['experiment_revision'] != experiment_revision
                 or result['evaluation_id'] != evaluation_id or result['config'] != shared_config):
             raise ValueError('Resume input/configuration differs from the saved case.')
     else:
-        result = dict(schema=3, experiment_revision=EXPERIMENT_REVISION, target=args.target, dataset=args.dataset, seed=args.seed,
+        result = dict(schema=3, experiment_revision=experiment_revision, target=args.target, dataset=args.dataset, seed=args.seed,
                       evaluation_id=evaluation_id, config=shared_config, device=str(device),
                       target_metrics=metrics_by_name(cfg.target.test, target_scores),
                       shadow={}, attack_configs={}, results={})
-    for name in CONDITIONS:
-        stage_cfg = configuration(args, name)
+    for name in conditions:
+        stage_cfg = configuration_fn(args, name)
         resolved = OmegaConf.to_container(stage_cfg.attack.model, resolve=True)
         if name in result['attack_configs'] and result['attack_configs'][name] != resolved:
             raise ValueError(f'Resume Attack settings changed: {name}')
         result['attack_configs'][name] = resolved
+        shadow_config = OmegaConf.to_container(stage_cfg.shadow.model, resolve=True)
+        if group_shadow_by_config:
+            existing = result['results'].get(name)
+            if existing and result['shadow'][existing['shadow_key']]['config'] != shadow_config:
+                raise ValueError(f'Resume Shadow settings changed: {name}')
         if name in result['results']:
             continue
         budget = None if name == 'baseline' else int(stage_cfg.shadow.model.train.num_epochs)
@@ -141,24 +147,35 @@ def run(args):
         if device.type == 'cuda':
             torch.cuda.reset_peak_memory_stats(device)
         shadow_model = load_shadow_model(**common, device=device, config=stage_cfg.shadow.model, data=shadow, writer=None)
-        shadow_scores = test_shadow_model(**common, device=device, model=shadow_model, data=shadow, config=stage_cfg.shadow.test)
+        key = ('baseline' if budget is None else str(budget))
+        if group_shadow_by_config:
+            key = next((k for k, v in result['shadow'].items() if v['config'] == shadow_config), name)
+            if hasattr(shadow_model, 'quantization_summary'):
+                from sralt.utils import model_fingerprint
+                shared = dict(behavior=model_fingerprint(shadow_model.behavioral_branch),
+                              rvq=model_fingerprint(shadow_model.rvq))
+                if result.get('shared_item_encoder', shared) != shared:
+                    raise ValueError('Item-prefix ablations did not reuse the same behavior encoder and RVQ')
+                result['shared_item_encoder'] = shared
+        shadow_scores = (None if group_shadow_by_config and key in result['shadow'] else
+                         test_shadow_model(**common, device=device, model=shadow_model, data=shadow, config=stage_cfg.shadow.test))
         data = load_attack_data(**common, target_data=target, shadow_data=shadow, shadow_model=shadow_model,
                                 config=stage_cfg.attack.data)
         for attribute, value in protocol['identity'].items():
             if attribute.endswith('_edge_index') and tensor_fingerprint(getattr(data, attribute)) != value:
                 raise ValueError(f'{attribute} changed between baseline and TailProxy')
-        key = 'baseline' if budget is None else str(budget)
-        result['shadow'][key] = dict(config=OmegaConf.to_container(stage_cfg.shadow.model, resolve=True),
-            metrics=metrics_by_name(stage_cfg.shadow.test, shadow_scores),
-            training={branch: short_training(info) for branch, info in getattr(shadow_model, 'branch_training', {}).items()},
-            diagnostics=getattr(data, 'shadow_diagnostics', None), elapsed_seconds=time.monotonic() - started,
-            peak_memory_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None)
+        if shadow_scores is not None:
+            result['shadow'][key] = dict(config=shadow_config,
+                metrics=metrics_by_name(stage_cfg.shadow.test, shadow_scores),
+                training={branch: short_training(info) for branch, info in getattr(shadow_model, 'branch_training', {}).items()},
+                diagnostics=getattr(data, 'shadow_diagnostics', None), elapsed_seconds=time.monotonic() - started,
+                peak_memory_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None)
         del shadow_model
         target.to(torch.device('cpu'))
         shadow.to(torch.device('cpu'))
         data.to(torch.device('cpu'))
         release(device)
-        if name == 'tail_proxy':
+        if name != 'baseline':
             data.fixed_eval_pairs = {'val': protocol['val']}
         started = time.monotonic()
         if device.type == 'cuda':
@@ -168,7 +185,7 @@ def run(args):
                                   tail_ratio=stage_cfg.attack.tail_ratio, writer=None)
         peak = torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None
         groups = evaluate(model, data, stage_cfg, protocol)
-        result['results'][name] = dict(groups=groups, shadow_budget=budget,
+        result['results'][name] = dict(groups=groups, shadow_budget=budget, shadow_key=key,
             training=getattr(model, 'training_summary', None), elapsed_seconds=time.monotonic() - started,
             peak_memory_bytes=peak)
         result['updated_at'] = now()

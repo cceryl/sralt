@@ -27,11 +27,13 @@ def average(values):
                 sample_sd=statistics.stdev(values) if len(values) > 1 else None)
 
 
-def read_record(run_dir, case, condition):
+def read_record(run_dir, case, condition, expected_revision=None):
     directory = run_dir / case['output']
     combined = directory / 'metrics.json'
     if combined.exists():
         saved = json.loads(combined.read_text())
+        if expected_revision is not None and saved.get('experiment_revision') != expected_revision:
+            raise ValueError('Recorded experiment revision differs from manifest')
         if condition not in saved['results']:
             raise FileNotFoundError(f'Condition not completed: {directory}/{condition}')
         value = saved['results'][condition]
@@ -65,7 +67,8 @@ def summarize(run_dir, output_dir=None):
             status = dict(**identity, status='missing', worker_status=case['status'])
             cases.append(status)
             try:
-                record = read_record(run_dir, case, condition)
+                record = read_record(run_dir, case, condition,
+                                     expected_revision=manifest.get('identity', {}).get('experiment_revision'))
                 status['status'] = 'completed'
                 records[(case['target'], case['dataset'], case['seed'], condition)] = record
                 for group in GROUPS:
@@ -90,7 +93,8 @@ def summarize(run_dir, output_dir=None):
                         summary.append(dict(target=target, dataset=dataset, condition=condition, group=group, metric=metric,
                                             seeds=seeds, missing_seeds=[s for s in manifest['seeds'] if s not in seeds],
                                             **average([r['value'] for r in rows])))
-    contrasts = {(condition, 'baseline') for condition in expected if condition != 'baseline'}
+    contrasts = {tuple(pair) for pair in manifest.get('contrasts',
+                 [(condition, 'baseline') for condition in expected if condition != 'baseline'])}
     paired, pair_buckets = [], {}
     for case in manifest['cases']:
         for left, right in sorted(contrasts):
@@ -121,10 +125,13 @@ def summarize(run_dir, output_dir=None):
     complete = sum(c['status'] == 'completed' for c in cases)
     write_csv(output_dir / 'summary.csv', summary, ['target', 'dataset', 'condition', 'group', 'metric', 'n', 'mean', 'sample_sd', 'seeds', 'missing_seeds'])
     write_csv(output_dir / 'paired.csv', pair_summary, ['target', 'dataset', 'left', 'right', 'group', 'metric', 'n', 'mean', 'sample_sd', 'positive', 'negative', 'seeds', 'deltas', 'missing_seeds'])
+    if manifest.get('save_paired_cases'):
+        write_csv(output_dir / 'paired_cases.csv', paired,
+                  ['target', 'dataset', 'seed', 'left', 'right', 'group', 'metric', 'status', 'delta'])
     lookup = {(r['target'], r['dataset'], r['condition'], r['group'], r['metric']): r for r in summary}
-    report = ['# TailProxy实验结果', '', f'{complete}/{len(cases)}条评价完成。AUC/F1为主，TPR@1%为次；所有表保留缺失seed。', '',
-              'baseline采用原已接受规则及可复用权重；其余方法使用各自保存的配置，最终在CPU共用固定隐藏用户对及分组。', '',
-              '差值为TailProxy−baseline；逐seed差值及汇总见paired.csv。未运行的计划不算完成。', '']
+    report = [manifest.get('report_title', '# TailProxy实验结果'), '', f'{complete}/{len(cases)}条评价完成。AUC/F1为主，TPR@1%为次；所有表保留缺失seed。', '',
+              manifest.get('method_description', 'baseline采用原已接受规则及可复用权重；其余方法使用各自保存的配置，最终在CPU共用固定隐藏用户对及分组。'), '',
+              manifest.get('contrast_description', '差值为TailProxy−baseline；逐seed差值及汇总见paired.csv。未运行的计划不算完成。'), '']
     for target in manifest['targets']:
         for dataset in manifest['datasets']:
             report += [f'## {target}/{dataset}', '', '| 条件 | 分组 | n | AUC | F1 | TPR@1% |', '| --- | --- | ---: | ---: | ---: | ---: |']
