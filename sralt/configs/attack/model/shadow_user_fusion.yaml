@@ -1,0 +1,3 @@
+name: ShadowUserFusion
+revision: projected-shadow-users-degree-v1
+ensemble_condition: shadow_project_degree

@@ -1,0 +1,3 @@
+name: CSAItemPrefixEnsemble
+revision: raw-probability-mean-v1
+ensemble_condition: score_mean

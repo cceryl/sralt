@@ -42,7 +42,11 @@ class TrainAttackDataset(Dataset):
         self.attack_data = attack_data
         self.negative_ratio = negative_ratio
 
-        self.pos_edge_index = attack_data.train_social_edge_index
+        # Auxiliary Attack views can partition direct supervision without
+        # changing the native graph, feature payload or formal expert path.
+        split = getattr(attack_data, 'attack_training_split', None)
+        self.pos_edge_index = (attack_data.train_social_edge_index if split is None
+                               else split['positive_edge_index'].to(attack_data.device))
         self.neg_edge_index = torch.tensor([], device=attack_data.device)
         self.num_negatives = int(self.negative_ratio * self.pos_edge_index.size(1))
 
@@ -69,9 +73,10 @@ class TrainAttackDataset(Dataset):
         :return: A tuple containing the two user indices and the label.
         """
         if self.access_counter == 0:
-            self.neg_edge_index = sample_negative_pairs(
+            sampler = getattr(self.attack_data, 'sample_attack_training_negatives', None)
+            self.neg_edge_index = (sample_negative_pairs(
                 self.pos_edge_index, self.attack_data.num_users, self.num_negatives
-            )
+            ) if sampler is None else sampler(self.num_negatives))
             self.edge_index = torch.cat([self.pos_edge_index, self.neg_edge_index], dim=1)
 
         self.access_counter = (self.access_counter + 1) % len(self)
@@ -92,7 +97,8 @@ class BalancedAttackBatchSampler(Sampler[list[int]]):
     A tail smaller than half the nominal batch size is merged into
     the preceding batch.
     Negative edges are still resampled by the dataset once
-    per full traversal, using only training positives for exclusion.
+    per full traversal. Auxiliary OOF views additionally partition supervision;
+    the ordinary expert path uses only training positives for exclusion.
     """
 
     def __init__(self, dataset: TrainAttackDataset, batch_size: int):

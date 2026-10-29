@@ -47,6 +47,10 @@ def log_recommendation_results(stage: str, config: DictConfig, values: list[floa
 
 
 def run_pipeline(config: DictConfig) -> None:
+    if config.attack.model.get('ensemble_condition') is not None:
+        from ensemble_pipeline import run_ensemble_pipeline
+        run_ensemble_pipeline(config)
+        return
     instantiate(config.filter_warnings)
     logging.info(
         f'Dataset: {config.target.data.name}; '

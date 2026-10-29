@@ -160,6 +160,10 @@ def attack_stage(
 
 @hydra.main(config_path='pkg://sralt.configs', config_name='config', version_base=None)
 def main(config: DictConfig):
+    if config.attack.model.get('ensemble_condition') is not None:
+        from ensemble_pipeline import run_ensemble_pipeline
+        run_ensemble_pipeline(config)
+        return
     instantiate(config.filter_warnings)
 
     logging.info(

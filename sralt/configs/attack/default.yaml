@@ -1,6 +1,6 @@
 defaults:
   - data: default
-  - model: "???"
+  - model: ensemble
   - test: default
 
 tail_ratio: 0.8

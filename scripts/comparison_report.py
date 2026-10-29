@@ -7,6 +7,7 @@ Run from any directory with the project's Python environment (inside Apptainer):
         --pairs smia:mlp csa:mlp miner:miner miner:enminer --seeds 42 43
     python scripts/comparison_report.py --target-metrics --shadow-metrics
     python scripts/comparison_report.py --allow-training
+    python scripts/comparison_report.py --pairs ensemble:ensemble ensemble:shadow_user_fusion
 
 Metric records are stored in .cache/comparison_report. Model/data caches use
 the existing loaders. A metrics hit bypasses all model imports and loading.
@@ -30,7 +31,9 @@ import argparse
 # Edit these defaults, then run without arguments. CLI options override each field.
 DATASETS = ["ciao", "epinions", "flickr", "yelp"]
 TARGET_MODELS = ["design", "gdmsr", "egcl"] # lightgcn
-MODEL_PAIRS = [("smia", "mlp"), ("csa", "mlp"), ("tail_proxy", "tail_proxy"), ("item_prefix", "item_prefix"), ("item_prefix_csa", "item_prefix_csa")] # ("miner", "miner"), ("miner", "enminer")
+MODEL_PAIRS = [("ensemble", "ensemble"), ("ensemble", "shadow_user_fusion"),
+               ("smia", "mlp"), ("csa", "mlp"), ("tail_proxy", "tail_proxy"),
+               ("item_prefix", "item_prefix"), ("item_prefix_csa", "item_prefix_csa")]
 SEEDS = [42, 43, 44, 45, 46]
 INCLUDE_TARGET_METRICS = True
 INCLUDE_SHADOW_METRICS = True
@@ -71,6 +74,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         shadow, attack = pair.split(":")
         if attack in {"miner", "enminer"} and shadow != "miner":
             parser.error(f"{attack} requires shadow/model=miner")
+        if (shadow == "ensemble") != (attack in {"ensemble", "shadow_user_fusion"}):
+            parser.error('ensemble settings require ensemble:ensemble or ensemble:shadow_user_fusion')
     for name in ("datasets", "targets", "pairs", "seeds"):
         setattr(args, name, list(dict.fromkeys(getattr(args, name))))
     return args
@@ -83,6 +88,10 @@ def source_digest() -> str:
         if path.suffix in {".py", ".yaml"}:
             digest.update(str(path.relative_to(ROOT)).encode())
             digest.update(path.read_bytes())
+    for name in ('comparison_report.py', 'ensemble_pipeline.py', 'csa_itemprefix_ensemble_case.py',
+                 'csa_itemprefix_ensemble_recipe.py', 'tail_proxy_case.py'):
+        digest.update(name.encode())
+        digest.update((ROOT / 'scripts' / name).read_bytes())
     return digest.hexdigest()
 
 
@@ -139,6 +148,9 @@ def cache_identity(config: Any, stage: str, sources: str) -> dict:
         stages["attack"] = cfg["attack"]
         # Older records contain only All/Head/Tail; they cannot supply subgroups.
         stages["attack_report_groups"] = [*GROUPS, *ATTACK_SUBGROUPS]
+    if config.attack.model.get('ensemble_condition') is not None and stage != 'target':
+        from ensemble_pipeline import resolved_experiment_config
+        stages['ensemble_experts'] = resolved_experiment_config(config)
     return {"schema": CACHE_SCHEMA, "stage": stage, "sources": sources, "dataset_files": files,
             "namespace": os.environ.get("SRALT_CACHE_VERSION", "default"),
             "seed": cfg["seed"], "deterministic": cfg["deterministic"], "config": stages}
@@ -189,7 +201,9 @@ class MissingTrainingCache(RuntimeError):
     """Expected model cache miss when the report is not allowed to train."""
 
 
-def load_report_model(stage: str, loader: Any, allow_training: bool, **kwargs: Any) -> Any:
+def load_report_model(stage: str, loader: Any, allow_training: bool,
+                      cache_directory: str | None = None, cache_ignore: list[str] | None = None,
+                      **kwargs: Any) -> Any:
     """Reuse disk_cache's exact key and hooks without entering a training function."""
     if allow_training:
         return loader(**kwargs)
@@ -200,13 +214,14 @@ def load_report_model(stage: str, loader: Any, allow_training: bool, **kwargs: A
     # On a miss, the decorator calls this function instead of the training loader.
     @functools.wraps(loader)
     def unavailable(*args: Any, **bound_kwargs: Any) -> Any:
-        raise MissingTrainingCache(f"{stage}/{kwargs['config'].name}: no matching trained model cache")
+        label = kwargs['config'].name if 'config' in kwargs else kwargs['condition']
+        raise MissingTrainingCache(f"{stage}/{label}: no matching trained model cache")
 
     reader = disk_cache(
-        cache_dir=f".cache/{stage}/model/{{config.name}}",
-        ignore=["device", "writer"],
+        cache_dir=cache_directory or f".cache/{stage}/model/{{config.name}}",
+        ignore=cache_ignore if cache_ignore is not None else ["device", "writer"],
         hook=lambda model, arguments, _: model.to(arguments["device"]),
-        hit=f'Load trained {stage} model "{{config.name}}" from cache at "{{__cache__.path}}".',
+        hit=f'Load trained {stage} model from cache at "{{__cache__.path}}".',
         miss=f'No trained {stage} model cache at "{{__cache__.path}}"; training disabled.'
     )(unavailable)
     # A refresh request must never turn this read into training or bypass an
@@ -271,6 +286,71 @@ def evaluate_missing(config: Any, identities: dict, records: dict, allow_trainin
                                      subgroup_metrics=attack_data.subgroup_metrics)
 
 
+def collect_ensemble(config: Any, identities: dict, records: dict, status: dict,
+                     args: argparse.Namespace, dataset: str, target: str) -> str | None:
+    """Two-expert attack rows; recommendation metrics retain their real owners."""
+    from ensemble_pipeline import saved_result, execute
+    condition = str(config.attack.model.ensemble_condition)
+    missing = []
+    if records['attack'] is None:
+        refresh = args.refresh_metrics or os.environ.get('SRALT_CACHE_REFRESH') == '1'
+        artifact = None if refresh else saved_result(config, condition, dataset, target)
+        computed = False
+        if artifact is None and not args.dry_run:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                with tempfile.TemporaryDirectory(prefix='ensemble-', dir=CACHE_DIR) as temporary:
+                    artifact = execute(config, temporary, allow_training=args.allow_training,
+                                       cache_loader=load_report_model)
+                computed = True
+            except MissingTrainingCache as error:
+                missing.append(str(error))
+        if artifact is not None:
+            document, result = artifact['document'], artifact['result']
+            group_map = dict(all='All', head='Head', tail='Tail', **ATTACK_SUBGROUPS)
+            metrics, counts = {}, {}
+            for group, native_group in group_map.items():
+                values = result['groups'].get(native_group)
+                if values is None:
+                    continue  # Historical experiments did not export HH/HT.
+                metrics[group] = {}
+                for spec in config.attack.test.metrics:
+                    name = metric_name(spec)
+                    native_name = (f"TPR@FPR={spec.target_fpr:g}"
+                                   if str(spec._target_).rsplit('.', 1)[-1] == 'TPRatFPR' else name)
+                    value = values.get(native_name)
+                    metrics[group][name] = value if value is not None and math.isfinite(value) else None
+                counts[group] = {k: values[k] for k in ('samples', 'positives', 'negatives')}
+            record = dict(identity=identities['attack'], created_at=document['updated_at'],
+                metrics=metrics, group_counts=counts,
+                ensemble=dict(condition=condition, origin='evaluated' if computed else 'saved_experiment',
+                    artifact=None if computed else artifact['path'],
+                    source_fingerprint=document['source_fingerprint'], evaluation_id=document['evaluation_id'],
+                    experts=document['experts'], training=result.get('training')))
+            records['attack'] = record
+            status['attack'] = 'computed' if computed else 'cached'
+            if not args.dry_run:
+                path = cache_path(identities['attack'])
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as handle:
+                    json.dump(record, handle, ensure_ascii=False, allow_nan=False)
+                    temporary = Path(handle.name)
+                temporary.replace(path)
+    if 'shadow' in identities:
+        # Neither setting defines a single combined Shadow recommender.
+        records['shadow'] = None
+        status['shadow'] = 'not_applicable'
+    if 'target' in identities and records['target'] is None and not args.dry_run:
+        target_records = {'target': None}
+        try:
+            evaluate_missing(config, {'target': identities['target']}, target_records, args.allow_training)
+            records['target'] = target_records['target']
+            status['target'] = 'computed'
+        except MissingTrainingCache as error:
+            missing.append(str(error))
+    return '; '.join(missing) or None
+
+
 def collect(args: argparse.Namespace) -> dict:
     sources = source_digest()
     rows = []
@@ -296,7 +376,9 @@ def collect(args: argparse.Namespace) -> dict:
         logging.info("[%d/%d] %s / %s / %s / seed=%d metric cache: %s", index, len(combinations),
                      dataset, target, pair, seed, status)
         missing_reason = None
-        if not args.dry_run and any(r is None for r in records.values()):
+        if config.attack.model.get('ensemble_condition') is not None:
+            missing_reason = collect_ensemble(config, identities, records, status, args, dataset, target)
+        elif not args.dry_run and any(r is None for r in records.values()):
             try:
                 evaluate_missing(config, identities, records, allow_training=args.allow_training)
             except MissingTrainingCache as error:
@@ -310,6 +392,7 @@ def collect(args: argparse.Namespace) -> dict:
                          tail_ratio=float(config.attack.tail_ratio), status=status, missing_reason=missing_reason,
                          results={stage: record["metrics"] if record else None for stage, record in records.items()},
                          attack_group_counts=records["attack"].get("group_counts", {}) if records["attack"] else {},
+                         ensemble=records['attack'].get('ensemble') if records['attack'] else None,
                          evaluated_at={stage: record["created_at"] if record else None for stage, record in records.items()}))
     return {"rows": rows, "stages": stages, "generated_at": datetime.now().astimezone().isoformat(),
             "namespace": os.environ.get("SRALT_CACHE_VERSION", "default"), "sources": sources,
@@ -334,7 +417,7 @@ h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:0 0 16px}.muted,small{
 .table-wrap{overflow:auto;max-height:65vh}table{border-collapse:collapse;white-space:nowrap;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:11px;border-bottom:1px solid #e5ebf1}th{background:#edf3fa;cursor:pointer;position:sticky;top:0;z-index:1}td:first-child,th:first-child{text-align:left}.best{color:#08674e;font-weight:700;background:#edfaf4}.missing{color:#9c4550}details{margin-top:14px}summary{cursor:pointer}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,450px),1fr));gap:18px}.chart{border:1px solid #e1e8f0;border-radius:8px;padding:14px;overflow:auto}svg{display:block;width:100%;min-width:410px}svg text{font-family:system-ui,sans-serif;fill:#354c61}.empty{text-align:center;padding:32px;color:#53677b}.badge{background:#e6effa;border-radius:20px;padding:4px 10px}header p{line-height:1.7}#summary{line-height:1.8}.toolbar{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:18px}.error{background:#fff1f2;padding:16px}
 @media(max-width:600px){body{padding:14px}.card{padding:14px}h1{font-size:23px}}@media print{.controls,.toolbar button{display:none}.table-wrap{max-height:none}body{padding:0}}
 </style>
-<header><h1>SRALT <span class="muted">/ 对比实验</span></h1><p class="muted" id="meta"></p></header>
+<header><h1>SRALT <span class="muted">/ 对比实验</span></h1><p class="muted" id="meta"></p><p class="muted">ensemble / ensemble：默认S0，两完整专家原始概率等权平均。ensemble / shadow_user_fusion：U＋公开度，投影两路Shadow用户向量后分类。两项没有单一的合并Shadow推荐指标；历史产物未记录的人群指标显示为缺失。</p></header>
 <section class="card"><h2>筛选与显示</h2><div class="controls" id="filters"></div>
 <div class="toolbar" style="margin-top:18px;margin-bottom:0"><label><input type="checkbox" id="aggregate" checked>合并种子（均值 ± 样本标准差）</label><label><input type="checkbox" id="recommendation">显示 Target / Shadow 指标</label><label><input type="checkbox" id="hide-empty">隐藏整行无记录的组合</label><label>Baseline（Shadow / Attack）<select id="baseline"><option value="">不比较</option></select></label><button id="reset">重置筛选</button><button id="csv">导出当前表格 CSV</button><button id="json">导出完整结果 JSON</button></div></section>
 <section class="card"><div id="summary"></div><p class="muted">数值范围 0–1；攻击指标越高表示攻击效果越强、隐私泄漏越大。均值按种子等权计算，误差线表示 ±1 样本标准差；单种子不估计标准差。缺失与非有限值显示为 —，不参与均值。</p><details><summary>评估口径与缓存信息</summary><p>头尾用户按现有 pipeline 的社交度划分，尾部比例见完整结果。Head/Tail 按关系端点计权：一个同组端点计一次，两个同组端点计两次；All 每条关系计一次。Head–Head / Head–Tail / Tail–Tail 分别表示两端均为头部、一头一尾、两端均为尾部，每条关系计一次。Isolated Tail 为 Shadow 社交图中度为 0 的尾部用户，按符合条件的端点计权，两个端点均符合时计两次；空组或需要正负两类但缺少一类时显示 —。不同数据集、Target 分面展示，不混合平均。LightGCN 仅使用用户—物品交互，是非社交对照；其关系推断效果不能直接解释为使用社交边训练导致的成员泄漏。</p><p>缓存独立于训练 pipeline，键包含配置、种子、代码、数据文件元信息及 SRALT_CACHE_VERSION。相同配置重训后，请使用 --refresh-metrics 更新；该选项仍复用现有训练缓存。页面筛选不会运行实验。结果状态 cached/computed/missing 与测试时间见 JSON。</p><p id="provenance" class="muted"></p></details></section>
@@ -370,7 +453,8 @@ for(const metric of report.attack_metrics){const option=document.createElement('
 for(const pair of unique(report.rows.map(row=>JSON.stringify([row.shadow,row.attack])))){
   const option=document.createElement('option');option.value=pair;option.textContent=JSON.parse(pair).join(' / ');$('baseline').append(option);
 }
-$('baseline').value='';
+const defaultBaseline=report.rows.some(row=>row.shadow==='ensemble'&&row.attack==='ensemble')?JSON.stringify(['ensemble','ensemble']):'';
+$('baseline').value=defaultBaseline;
 $('recommendation').checked=report.stages.some(stage=>stage!=='attack');
 const number=n=>Number.isFinite(n)?n.toFixed(4):'—';
 function stats(values){const valid=values.filter(Number.isFinite),n=valid.length;if(!n)return {mean:null,sd:null,n:0};const mean=valid.reduce((a,b)=>a+b,0)/n;return {mean,sd:n>1?Math.sqrt(valid.reduce((s,v)=>s+(v-mean)**2,0)/(n-1)):null,n};}
@@ -445,7 +529,7 @@ function render(){const selected=selectedRows(),allRows=aggregate(selected),rows
 function download(name,content,type){const url=URL.createObjectURL(new Blob(['\ufeff',content],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('csv').onclick=()=>{const quote=v=>'"'+String(v).replace(/"/g,'""')+'"';download('sralt-comparison.csv',[currentTable.headers,...currentTable.rows].map(row=>row.map(quote).join(',')).join('\r\n'),'text/csv;charset=utf-8');};
 $('json').onclick=()=>download('sralt-comparison.json',JSON.stringify(report,null,2),'application/json');
-$('reset').onclick=()=>{for(const [key,values] of Object.entries(initial))choices[key]=new Set(values);$('filters').querySelectorAll('input').forEach(i=>i.checked=true);$('hide-empty').checked=false;$('baseline').value='';render();};
+$('reset').onclick=()=>{for(const [key,values] of Object.entries(initial))choices[key]=new Set(values);$('filters').querySelectorAll('input').forEach(i=>i.checked=true);$('hide-empty').checked=false;$('baseline').value=defaultBaseline;render();};
 for(const id of ['aggregate','recommendation','hide-empty','baseline','chart-metric','chart-group'])$(id).onchange=render;
 render();
 </script></html>'''

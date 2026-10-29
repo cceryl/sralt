@@ -1,4 +1,4 @@
 defaults:
   - data: default
-  - model: "???"
+  - model: ensemble
   - test: default
