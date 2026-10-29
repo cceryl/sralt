@@ -1,0 +1,8 @@
+defaults:
+  - item_prefix_csa
+  - _self_
+
+name: ItemPrefixCSAIndependentAttack
+revision: item-prefix-csa-independent-attack-v1
+attribute:
+  _target_: sralt.attack.model.item_prefix_csa_independent.ItemPrefixCSAIndependentAttack

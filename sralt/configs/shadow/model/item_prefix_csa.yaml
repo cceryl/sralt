@@ -1,5 +1,5 @@
 name: ItemPrefixCSAShadow
-revision: item-prefix-csa-shadow-prefix10-v2
+revision: item-prefix-csa-mean-weights-v3
 attribute:
   _target_: sralt.shadow.model.item_prefix_csa.ItemPrefixCSAShadow
   embed_dim: 64
@@ -13,8 +13,10 @@ attribute:
   prefix_augmentation: true
   prefix_edge_scale: 0.1
   user_augmentation: true
+  user_edge_scale: 1.0
+  user_edge_weighting: uniform
   graph_mode: dual
-  fusion: linear
+  fusion: mean
   random_user_graph: false
   fixed_user_codes: false
   quantized_scoring: both

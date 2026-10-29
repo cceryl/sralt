@@ -8,7 +8,7 @@ import signal
 import sys
 from zoneinfo import ZoneInfo
 
-from item_prefix_csa_recipe import EXPERIMENT_REVISION, SUITES, contrasts
+from item_prefix_csa_recipe import FOLLOWUP_REVISION, SUITES, contrasts, experiment_revision
 from run_tail_proxy import run
 from run_restored_baseline import ROOT
 from summarize_tail_proxy import summarize
@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--targets', nargs='+', choices=['design', 'gdmsr'], default=['design', 'gdmsr'])
     parser.add_argument('--datasets', nargs='+', choices=['ciao', 'flickr'], default=['ciao', 'flickr'])
     parser.add_argument('--seeds', type=int, nargs='+', default=list(range(42, 47)))
-    parser.add_argument('--suite', choices=list(SUITES), default='core')
+    parser.add_argument('--suite', choices=list(SUITES), default='followup')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--cpu', action='store_true')
@@ -46,14 +46,20 @@ def main():
     args.run_dir = args.run_dir or Path('runs/item-prefix-csa') / datetime.now(
         ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d-%H%M%S')
     conditions = SUITES[args.suite]
+    revision = experiment_revision(conditions)
+    method = ('均值融合Full；复查user图/matcher、增强边当前强度×50/20/10%、user边uniform/IDF。'
+              '独立Social使用两套BPR/物品表/早停，Attack拼接五块特征。Behavior与双RVQ共享缓存。'
+              if revision == FOLLOWUP_REVISION else
+              '历史prefix10-v2配置：线性Full，两图共享BPR。CSA保留300轮及原MLP，整模型差异不作单因素归因。')
     previous = signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:
-        return run(args, conditions=conditions, experiment_revision=EXPERIMENT_REVISION,
-            worker_name='item_prefix_csa_case.py', worker_arguments=['--conditions', *conditions],
+        return run(args, conditions=conditions, experiment_revision=revision,
+            worker_name='item_prefix_csa_case.py', worker_arguments=['--conditions', *conditions,
+                '--expected-revision', revision],
             identity_extra=dict(suite=args.suite, conditions=list(conditions)),
             metadata=dict(contrasts=contrasts(conditions), save_paired_cases=True,
                 report_title='# ItemPrefixCSA 实验结果',
-                method_description='双RVQ行为联合训练后冻结；两图分别传播、融合后共享BPR。Full与图/matcher消融共享双RVQ缓存；评分消融使用独立行为缓存。CSA保留原300轮配置，SMIA/MLP与ItemPrefix沿用原配置，整模型参照不作单因素归因。',
+                method_description=method,
                 contrast_description='paired.csv/paired_cases.csv记录left−right；All/Head/Tail/TT/isolated_Tail使用同一评价用户对。公开验证选模，不用隐藏结果选择模型。'))
     except KeyboardInterrupt:
         return 130

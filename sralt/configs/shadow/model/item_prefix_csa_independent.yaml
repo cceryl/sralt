@@ -1,0 +1,8 @@
+defaults:
+  - item_prefix_csa
+  - _self_
+
+name: ItemPrefixCSAIndependentShadow
+revision: item-prefix-csa-independent-v1
+attribute:
+  _target_: sralt.shadow.model.item_prefix_csa_independent.ItemPrefixCSAIndependentShadow

@@ -11,12 +11,14 @@ from sralt.utils import model_fingerprint
 class ItemPrefixAttack(AttackModel):
     """Reuse fixed BCE/AdamW/balanced training and continuous endpoint features."""
 
+    feature_blocks = 4
+
     def __init__(self, user_feature_dim, prefix_levels=(8,), prefix_matching=True,
                  normalize_features=True, sparse_training=True, sparse_probability=.5,
                  hidden_dim=128, dropout=.2):
         super().__init__(user_feature_dim)
-        if user_feature_dim % 4:
-            raise ValueError('ItemPrefixAttack requires four equally sized continuous blocks.')
+        if user_feature_dim % self.feature_blocks:
+            raise ValueError(f'{type(self).__name__} requires {self.feature_blocks} equally sized continuous blocks.')
         self.prefix_levels = tuple(prefix_levels)
         self.prefix_matching = prefix_matching
         self.normalize_features = normalize_features

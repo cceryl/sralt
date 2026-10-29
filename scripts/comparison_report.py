@@ -30,7 +30,7 @@ import argparse
 # Edit these defaults, then run without arguments. CLI options override each field.
 DATASETS = ["ciao", "epinions", "flickr", "yelp"]
 TARGET_MODELS = ["design", "gdmsr", "egcl"] # lightgcn
-MODEL_PAIRS = [("smia", "mlp"), ("csa", "mlp"), ("tail_proxy", "tail_proxy")] # ("miner", "miner"), ("miner", "enminer")
+MODEL_PAIRS = [("smia", "mlp"), ("csa", "mlp"), ("tail_proxy", "tail_proxy"), ("item_prefix", "item_prefix"), ("item_prefix_csa", "item_prefix_csa")] # ("miner", "miner"), ("miner", "enminer")
 SEEDS = [42, 43, 44, 45, 46]
 INCLUDE_TARGET_METRICS = True
 INCLUDE_SHADOW_METRICS = True
@@ -42,6 +42,10 @@ ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = ROOT / ".cache/comparison_report"
 CACHE_SCHEMA = 1
 GROUPS = ("all", "head", "tail")
+ATTACK_SUBGROUPS = {
+    "head_head": "HH", "head_tail": "HT", "tail_tail": "TT",
+    "isolated_tail": "isolated_Tail",
+}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -133,6 +137,8 @@ def cache_identity(config: Any, stage: str, sources: str) -> dict:
         stages["shadow"] = shadow
     if stage == "attack":
         stages["attack"] = cfg["attack"]
+        # Older records contain only All/Head/Tail; they cannot supply subgroups.
+        stages["attack_report_groups"] = [*GROUPS, *ATTACK_SUBGROUPS]
     return {"schema": CACHE_SCHEMA, "stage": stage, "sources": sources, "dataset_files": files,
             "namespace": os.environ.get("SRALT_CACHE_VERSION", "default"),
             "seed": cfg["seed"], "deterministic": cfg["deterministic"], "config": stages}
@@ -148,12 +154,28 @@ def finite_metrics(names: list[str], values: list[float]) -> dict:
             for name, value in zip(names, values, strict=True)}
 
 
-def save_metrics(path: Path, identity: dict, values: Any, config: Any) -> dict:
+def save_metrics(path: Path, identity: dict, values: Any, config: Any,
+                 subgroup_metrics: dict | None = None) -> dict:
     names = [metric_name(m) for m in config.test.metrics]
     metrics = ({group: finite_metrics(names, group_values)
                 for group, group_values in zip(GROUPS, values, strict=True)}
                if identity["stage"] == "attack" else {"all": finite_metrics(names, values)})
     record = {"identity": identity, "created_at": datetime.now(timezone.utc).isoformat(), "metrics": metrics}
+    if identity["stage"] == "attack" and subgroup_metrics is not None:
+        # grouped_attack_report uses numeric FPR labels; the report uses percentages.
+        subgroup_names = [
+            f"TPR@FPR={m['target_fpr']:g}" if str(m["_target_"]).rsplit(".", 1)[-1] == "TPRatFPR"
+            else metric_name(m) for m in config.test.metrics
+        ]
+        counts = {}
+        for group, source in ATTACK_SUBGROUPS.items():
+            result = subgroup_metrics[source]
+            metrics[group] = {}
+            for name, key in zip(names, subgroup_names, strict=True):
+                value = result[key]
+                metrics[group][name] = float(value) if value is not None and math.isfinite(value) else None
+            counts[group] = {key: result[key] for key in ("samples", "positives", "negatives")}
+        record["group_counts"] = counts
     path.parent.mkdir(parents=True, exist_ok=True)
     # Write a complete record atomically, including for interrupted multi-seed runs.
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
@@ -245,7 +267,8 @@ def evaluate_missing(config: Any, identities: dict, records: dict, allow_trainin
                                tail_ratio=config.attack.tail_ratio, writer=None)
     values = test_attack_model(**common, device=device, model=attack, data=attack_data,
                                config=config.attack.test, tail_ratio=config.attack.tail_ratio)
-    records["attack"] = save_metrics(cache_path(identities["attack"]), identities["attack"], values, config.attack)
+    records["attack"] = save_metrics(cache_path(identities["attack"]), identities["attack"], values, config.attack,
+                                     subgroup_metrics=attack_data.subgroup_metrics)
 
 
 def collect(args: argparse.Namespace) -> dict:
@@ -286,6 +309,7 @@ def collect(args: argparse.Namespace) -> dict:
                          target_config=target, defense=defense, shadow=shadow, attack=attack, seed=seed,
                          tail_ratio=float(config.attack.tail_ratio), status=status, missing_reason=missing_reason,
                          results={stage: record["metrics"] if record else None for stage, record in records.items()},
+                         attack_group_counts=records["attack"].get("group_counts", {}) if records["attack"] else {},
                          evaluated_at={stage: record["created_at"] if record else None for stage, record in records.items()}))
     return {"rows": rows, "stages": stages, "generated_at": datetime.now().astimezone().isoformat(),
             "namespace": os.environ.get("SRALT_CACHE_VERSION", "default"), "sources": sources,
@@ -313,16 +337,16 @@ h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:0 0 16px}.muted,small{
 <header><h1>SRALT <span class="muted">/ 对比实验</span></h1><p class="muted" id="meta"></p></header>
 <section class="card"><h2>筛选与显示</h2><div class="controls" id="filters"></div>
 <div class="toolbar" style="margin-top:18px;margin-bottom:0"><label><input type="checkbox" id="aggregate" checked>合并种子（均值 ± 样本标准差）</label><label><input type="checkbox" id="recommendation">显示 Target / Shadow 指标</label><label><input type="checkbox" id="hide-empty">隐藏整行无记录的组合</label><label>Baseline（Shadow / Attack）<select id="baseline"><option value="">不比较</option></select></label><button id="reset">重置筛选</button><button id="csv">导出当前表格 CSV</button><button id="json">导出完整结果 JSON</button></div></section>
-<section class="card"><div id="summary"></div><p class="muted">数值范围 0–1；攻击指标越高表示攻击效果越强、隐私泄漏越大。均值按种子等权计算，误差线表示 ±1 样本标准差；单种子不估计标准差。缺失与非有限值显示为 —，不参与均值。</p><details><summary>评估口径与缓存信息</summary><p>头尾用户按现有 pipeline 的社交度划分，尾部比例见完整结果。Head/Tail 按关系端点计权：一个同组端点计一次，两个同组端点计两次；All 每条关系计一次。不同数据集、Target 分面展示，不混合平均。LightGCN 仅使用用户—物品交互，是非社交对照；其关系推断效果不能直接解释为使用社交边训练导致的成员泄漏。</p><p>缓存独立于训练 pipeline，键包含配置、种子、代码、数据文件元信息及 SRALT_CACHE_VERSION。相同配置重训后，请使用 --refresh-metrics 更新；该选项仍复用现有训练缓存。页面筛选不会运行实验。结果状态 cached/computed/missing 与测试时间见 JSON。</p><p id="provenance" class="muted"></p></details></section>
+<section class="card"><div id="summary"></div><p class="muted">数值范围 0–1；攻击指标越高表示攻击效果越强、隐私泄漏越大。均值按种子等权计算，误差线表示 ±1 样本标准差；单种子不估计标准差。缺失与非有限值显示为 —，不参与均值。</p><details><summary>评估口径与缓存信息</summary><p>头尾用户按现有 pipeline 的社交度划分，尾部比例见完整结果。Head/Tail 按关系端点计权：一个同组端点计一次，两个同组端点计两次；All 每条关系计一次。Head–Head / Head–Tail / Tail–Tail 分别表示两端均为头部、一头一尾、两端均为尾部，每条关系计一次。Isolated Tail 为 Shadow 社交图中度为 0 的尾部用户，按符合条件的端点计权，两个端点均符合时计两次；空组或需要正负两类但缺少一类时显示 —。不同数据集、Target 分面展示，不混合平均。LightGCN 仅使用用户—物品交互，是非社交对照；其关系推断效果不能直接解释为使用社交边训练导致的成员泄漏。</p><p>缓存独立于训练 pipeline，键包含配置、种子、代码、数据文件元信息及 SRALT_CACHE_VERSION。相同配置重训后，请使用 --refresh-metrics 更新；该选项仍复用现有训练缓存。页面筛选不会运行实验。结果状态 cached/computed/missing 与测试时间见 JSON。</p><p id="provenance" class="muted"></p></details></section>
 <section class="card"><h2>攻击效果</h2><p class="muted">点击列标题排序；绿色标记相同数据集与 Target（逐种子模式再按 seed 分组）内的最高值。n 为参与该指标均值的有效种子数。</p><p id="baseline-note" class="muted" hidden>Δ =（当前值 − baseline 值）/ baseline 值 × 100%，是相对变化，不是百分点。仅比较相同数据集、Target；逐种子时还匹配 seed。合并时使用所选种子各自的有效均值（有效种子数可能不同）。Baseline 不受 Shadow/Attack 行筛选影响；缺失或为零时显示 Δ —，悬停可查看原因。正数表示攻击指标提高，隐私泄漏更强。</p><div class="table-wrap" id="attack-table"></div></section>
 <section class="card"><h2>SAL 配对效果</h2><p class="muted">逐种子匹配无防御基线，显示相对下降 (基线 − SAL) / 基线。攻击指标下降为防御效果，推荐指标下降为效用损失。先计算各匹配种子的变化，再汇总均值与样本标准差。</p><div class="table-wrap" id="defense-table"></div></section>
-<section class="card"><h2>指标图表</h2><div class="toolbar"><label>指标 <select id="chart-metric"></select></label><label>人群 <select id="chart-group"><option value="all">全部</option><option value="head">头部</option><option value="tail">尾部</option></select></label></div><div class="charts" id="charts"></div></section>
+<section class="card"><h2>指标图表</h2><div class="toolbar"><label>指标 <select id="chart-metric"></select></label><label>人群 <select id="chart-group"><option value="all">全部</option><option value="head">头部</option><option value="tail">尾部</option><option value="head_head">Head–Head</option><option value="head_tail">Head–Tail</option><option value="tail_tail">Tail–Tail</option><option value="isolated_tail">Isolated Tail</option></select></label></div><div class="charts" id="charts"></div></section>
 <section class="card" id="rec-section" hidden><h2>Target / Shadow 推荐指标</h2><p class="muted">同一阶段相同配置的结果复用。若生成时未启用，请用 --target-metrics / --shadow-metrics 重新运行脚本。</p><div class="table-wrap" id="rec-table"></div></section>
 <script type="application/json" id="report-data">__REPORT_DATA__</script>
 <script>
 'use strict';
 const report=JSON.parse(document.getElementById('report-data').textContent);
-const $=id=>document.getElementById(id), groups={all:'全部',head:'头部',tail:'尾部'};
+const $=id=>document.getElementById(id), groups={all:'全部',head:'头部',tail:'尾部',head_head:'Head–Head',head_tail:'Head–Tail',tail_tail:'Tail–Tail',isolated_tail:'Isolated Tail'};
 for(const row of report.rows)row.defense??='None';
 const dimensions={dataset:'数据集',target:'Target',defense:'防御',shadow:'Shadow',attack:'Attack',seed:'种子'};
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

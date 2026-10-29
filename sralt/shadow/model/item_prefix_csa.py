@@ -103,7 +103,7 @@ class FusedSocialBranch(nn.Module):
     """Independent user tables and one item scoring table; no item message edges."""
 
     def __init__(self, num_users, num_items, embed_dim, num_layers, num_codes,
-                 graph_mode='dual', fusion='linear'):
+                 graph_mode='dual', fusion='mean'):
         super().__init__()
         if graph_mode not in ('dual', 'prefix', 'user', 'joint') or fusion not in ('linear', 'mean', 'gate'):
             raise ValueError('Unknown social graph mode or fusion.')
@@ -172,18 +172,26 @@ class FusedSocialBranch(nn.Module):
 
 
 class ItemPrefixCSAShadow(ItemPrefixShadow):
+    # Historical cached objects predate user-edge weighting options.
+    user_edge_scale = 1.
+    user_edge_weighting = 'uniform'
+
     def __init__(self, num_users, num_items, embed_dim=64, num_layers=2, decay=.01,
                  num_quantizers=8, codebook_size=256, levels=(8,), user_num_quantizers=8,
                  user_codebook_size=256, prefix_augmentation=True, user_augmentation=True,
-                 graph_mode='dual', fusion='linear', random_user_graph=False,
+                 graph_mode='dual', fusion='mean', random_user_graph=False,
                  fixed_user_codes=False, quantized_scoring='both', user_loss_weight=1., item_loss_weight=1.,
-                 rvq_training='end_to_end', prefix_edge_scale=.1):
+                 rvq_training='end_to_end', prefix_edge_scale=.1,
+                 user_edge_scale=1., user_edge_weighting='uniform'):
         super().__init__(num_users, num_items, embed_dim, num_layers, decay,
                          num_quantizers, codebook_size, levels, rvq_training=rvq_training,
                          prefix_edge_scale=prefix_edge_scale)
         self.user_num_quantizers, self.user_codebook_size = user_num_quantizers, user_codebook_size
         self.prefix_augmentation, self.user_augmentation = prefix_augmentation, user_augmentation
         self.graph_mode, self.fusion = graph_mode, fusion
+        if user_edge_weighting not in ('uniform', 'idf'):
+            raise ValueError('user_edge_weighting must be uniform or idf.')
+        self.user_edge_scale, self.user_edge_weighting = user_edge_scale, user_edge_weighting
         self.random_user_graph, self.fixed_user_codes = random_user_graph, fixed_user_codes
         self.quantized_scoring = quantized_scoring
         # The parent assigns this field during initialization; use the same
@@ -197,6 +205,7 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         self.social_branch = self.new_social_branch()
         self.register_buffer('train_user_codes', torch.empty(0, user_num_quantizers, dtype=torch.long))
         self.register_buffer('user_permutations', torch.empty(0, user_num_quantizers, dtype=torch.long))
+        self.register_buffer('user_graph_information', torch.empty(0))
 
     def behavior_attributes(self):
         return {key: getattr(self, key) for key in ('num_users', 'num_items', 'embed_dim', 'num_layers',
@@ -220,6 +229,25 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         _, codes, _ = self.behavioral_branch.user_quantizer(raw[:self.num_users].unsqueeze(0))
         return codes.squeeze(0)
 
+    def user_semantic_links(self, user_codes):
+        """Layer-specific IDs, fixed full-query IDF, and optional degree-preserving permutation."""
+        n = self.num_users
+        codes = user_codes
+        if self.random_user_graph:
+            codes = codes.gather(0, self.user_permutations)
+        if self.user_augmentation:
+            layers = torch.arange(self.user_num_quantizers, device=codes.device) * self.user_codebook_size
+            users = torch.arange(n, device=codes.device).repeat_interleave(self.user_num_quantizers)
+            ce = torch.stack([users, (codes + layers + n).flatten()])
+            weights = (self.user_graph_information[(codes + layers).flatten()]
+                       if self.user_edge_weighting == 'idf' else
+                       self.prefix_information.new_ones(users.numel()))
+            ce = torch.cat([ce, ce.flip(0)], dim=1)
+            weights = weights.repeat(2) * self.user_edge_scale
+        else:
+            ce, weights = codes.new_empty(2, 0), self.prefix_information.new_empty(0)
+        return ce, weights
+
     def graph_inputs(self, public, prefix_ids, user_codes):
         n = self.num_users
         p = len(self.prefix_levels)
@@ -228,27 +256,19 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
             pw = pw * self.prefix_edge_scale
         else:
             pe, pw = public.new_empty(2, 0), self.prefix_information.new_empty(0)
-        codes = user_codes
-        if self.random_user_graph:
-            codes = codes.gather(0, self.user_permutations)
-        if self.user_augmentation:
-            layers = torch.arange(self.user_num_quantizers, device=codes.device) * self.user_codebook_size
-            users = torch.arange(n, device=codes.device).repeat_interleave(self.user_num_quantizers)
-            ce = torch.stack([users, (codes + layers + n).flatten()])
-            ce = torch.cat([ce, ce.flip(0)], dim=1)
-        else:
-            ce = public.new_empty(2, 0)
+        ce, cw = self.user_semantic_links(user_codes)
         nc = self.user_num_quantizers * self.user_codebook_size
         prefix_adj = code_adj = joint_adj = None
         if self.graph_mode in ('dual', 'prefix'):
             prefix_adj = build_normalized_adj(torch.cat([public, pe], dim=1), n + p,
                 torch.cat([pw.new_ones(public.size(1)), pw]))
         if self.graph_mode in ('dual', 'user'):
-            code_adj = build_normalized_adj(torch.cat([public, ce], dim=1), n + nc)
+            code_adj = build_normalized_adj(torch.cat([public, ce], dim=1), n + nc,
+                torch.cat([cw.new_ones(public.size(1)), cw]))
         if self.graph_mode == 'joint':
             joint_codes = ce + (ce >= n).to(ce.dtype) * p
             joint_adj = build_normalized_adj(torch.cat([public, pe, joint_codes], dim=1), n + p + nc,
-                torch.cat([pw.new_ones(public.size(1)), pw, pw.new_ones(ce.size(1))]))
+                torch.cat([pw.new_ones(public.size(1)), pw, cw]))
         return prefix_adj, code_adj, joint_adj
 
     def train_model(self, *, data, writer, train_batch_size, val_batch_size, val_num_negatives,
@@ -290,6 +310,13 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
                     seed=seed + 27027, num_quantizers=self.user_num_quantizers,
                     codebook_size=self.user_codebook_size, max_iter=self.rvq_max_iter).to(data.device)
             self.train_user_codes = self.encode_users(raw)
+            # One fixed graph-weight dictionary for train, evaluation and sparse views.
+            full_raw = GraphBranch.forward(self.behavioral_branch, self.behavior_adj(data.behavioral_edge_index, idf))
+            full_codes = self.encode_users(full_raw)
+            offset = torch.arange(self.user_num_quantizers, device=data.device) * self.user_codebook_size
+            frequency = torch.bincount((full_codes + offset).flatten(),
+                minlength=self.user_num_quantizers * self.user_codebook_size)
+            self.user_graph_information = ((self.num_users + 1.) / (frequency.float() + 1.)).log()
         generator = torch.Generator().manual_seed(seed + 37027)
         self.user_permutations = torch.stack([torch.randperm(self.num_users, generator=generator)
             for _ in range(self.user_num_quantizers)], dim=-1).to(data.device)
@@ -299,8 +326,9 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         self.train_social(graphs, train_loader, val_loader, num_epochs, optimizer,
                           instantiate(metrics), early_stopping, writer)
 
-    def train_social(self, graphs, train_loader, val_loader, num_epochs, optimizer, metrics, early_stopping, writer):
-        module = self.social_branch
+    def train_social(self, graphs, train_loader, val_loader, num_epochs, optimizer, metrics, early_stopping, writer,
+                     *, module=None, branch_name='social'):
+        module = self.social_branch if module is None else module
         opt = instantiate(optimizer, params=module.parameters())
         stop = instantiate(early_stopping, model=module)
         history, steps = [], 0
@@ -327,19 +355,30 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
                 values = compute_recommendation_metrics(module(graphs), metrics, val_loader)
             record = dict(epoch=epoch, validation=values, **{key: value / count for key, value in totals.items()})
             history.append(record)
-            logging.info('ItemPrefixCSA fused social: %s', record)
+            label = 'fused social' if branch_name == 'social' else branch_name
+            logging.info('ItemPrefixCSA %s: %s', label, record)
             if writer is not None:
-                writer.add_scalar('ItemPrefixCSA/social/Loss/train', record['loss'], epoch)
+                writer.add_scalar(f'ItemPrefixCSA/{branch_name}/Loss/train', record['loss'], epoch)
             if stop.step(sum(values)):
                 break
         stop.load_best_state()
         self.eval()
-        self.branch_training['social'] = dict(max_epochs=num_epochs, actual_epochs=len(history),
+        self.branch_training[branch_name] = dict(max_epochs=num_epochs, actual_epochs=len(history),
             best_epoch=stop.best_epoch, selected_epoch=stop.best_epoch, best_metric=stop.best_metric,
-            selection='fused_recommendation_validation_best', steps=steps,
+            selection=('fused_recommendation_validation_best' if branch_name == 'social'
+                       else 'independent_recommendation_validation_best'), steps=steps,
             stop_reason='early_stopping' if stop.counter >= stop.patience else 'epoch_limit',
             regularization='sum sampled raw user rows from active branches and shared item rows / batch size; code tables, projection and fusion excluded',
             elapsed_seconds=time.monotonic() - started, history=history)
+
+    def social_embeddings(self, graphs):
+        return self.social_branch(graphs)
+
+    def social_user_views(self, graphs):
+        return self.social_branch.user_views(graphs)
+
+    def social_parameter_count(self):
+        return sum(p.numel() for p in self.social_branch.parameters())
 
     @torch.no_grad()
     def test_model(self, *, data, metrics, test_batch_size, test_num_negatives):
@@ -348,7 +387,7 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
             self.prefix_sets(data.behavioral_train_edge_index, data.num_recommendations), self.train_user_codes)
         loader = TensorBatchLoader(EvalShadowDataset(data, split='test', num_negatives=test_num_negatives),
                                    batch_size=test_batch_size, shuffle=False)
-        return compute_recommendation_metrics(self.social_branch(graphs), metrics, loader)
+        return compute_recommendation_metrics(self.social_embeddings(graphs), metrics, loader)
 
     @torch.no_grad()
     def get_attack_payload(self, data):
@@ -361,12 +400,12 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         codes = self.train_user_codes if self.fixed_user_codes else full_codes
         prefixes = self.prefix_sets(edges, data.num_recommendations)
         graphs = self.graph_inputs(data.social_edge_index, prefixes, codes)
-        social = self.social_branch(graphs)[:self.num_users]
-        sparse = self.social_branch(self.graph_inputs(data.social_edge_index[:, :0], prefixes, codes))[:self.num_users]
+        social = self.social_embeddings(graphs)[:self.num_users]
+        sparse = self.social_embeddings(self.graph_inputs(data.social_edge_index[:, :0], prefixes, codes))[:self.num_users]
         offset_codes = codes + torch.arange(self.user_num_quantizers, device=codes.device) * self.user_codebook_size
         frequency = torch.bincount(offset_codes.flatten(), minlength=self.user_num_quantizers * self.user_codebook_size)
         information = ((self.num_users + 1.) / (frequency.float() + 1.)).log()
-        sp, sc = self.social_branch.user_views(graphs)
+        sp, sc = self.social_user_views(graphs)
         prefix_frequency = self.prefix_user_frequency
         public_degree = torch.bincount(data.social_edge_index[0], minlength=self.num_users).float()
         pe, pw = semantic_links(prefixes, self.prefix_information, self.num_users)
@@ -376,13 +415,19 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
         prefix_degree = public_degree.new_zeros(self.num_users)
         if prefix_active:
             prefix_degree.index_add_(0, pe[0, source_users], pw[source_users] * self.prefix_edge_scale)
-        code_degree = public_degree.new_full((self.num_users,), self.user_num_quantizers if user_active else 0)
+        ce, cw = self.user_semantic_links(codes)
+        code_degree = public_degree.new_zeros(self.num_users)
+        code_sources = ce[0] < self.num_users
+        if user_active:
+            code_degree.index_add_(0, ce[0, code_sources], cw[code_sources])
         def semantic_share(degree):
             total = public_degree + degree
             return float((degree / total.clamp_min(1e-12))[total > 0].mean()) if (total > 0).any() else 0.
         self.last_diagnostics = dict(quantization=self.quantization_summary, graph_mode=self.graph_mode,
             fusion=self.fusion, prefix_augmentation=self.prefix_augmentation, user_augmentation=self.user_augmentation,
             prefix_edge_scale=self.prefix_edge_scale,
+            user_edge_scale=self.user_edge_scale, user_edge_weighting=self.user_edge_weighting,
+            user_graph_frequency_view='fixed-full-query',
             random_user_graph=self.random_user_graph, user_code_view='train' if self.fixed_user_codes else 'full-query',
             user_code_change_per_level=(full_codes != self.train_user_codes).float().mean(0).tolist(),
             user_code_active_per_level=(frequency.reshape(self.user_num_quantizers, -1) > 0).sum(1).tolist(),
@@ -391,12 +436,13 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
             prefix_nodes=len(prefix_frequency),
             prefix_edges=int(source_users.sum()) if prefix_active else 0,
             user_code_edges=self.num_users * self.user_num_quantizers if user_active else 0,
+            nonzero_user_code_edges=int((cw[code_sources] > 0).sum()) if user_active else 0,
             semantic_weight_share=dict(prefix=semantic_share(prefix_degree), user_code=semantic_share(code_degree),
                 joint=semantic_share(prefix_degree + code_degree) if self.graph_mode == 'joint' else None),
             mean_norms=dict(behavior=float(raw[:self.num_users].norm(dim=-1).mean()),
                 fused=float(social.norm(dim=-1).mean()), prefix=float(sp.norm(dim=-1).mean()) if sp is not None else None,
                 user_code=float(sc.norm(dim=-1).mean()) if sc is not None else None),
-            social_parameters=sum(p.numel() for p in self.social_branch.parameters()),
+            social_parameters=self.social_parameter_count(),
             behavior_parameters=sum(p.numel() for p in self.behavioral_branch.parameters()))
         payload = dict(prefix_ids=prefixes, prefix_information=self.prefix_information,
             prefix_mass=prefix_mass(prefixes, self.prefix_information), sparse_social=sparse,
@@ -408,4 +454,7 @@ class ItemPrefixCSAShadow(ItemPrefixShadow):
             'num_quantizers', 'codebook_size', 'levels', 'user_num_quantizers', 'user_codebook_size',
             'prefix_augmentation', 'user_augmentation', 'prefix_edge_scale', 'graph_mode', 'fusion', 'random_user_graph',
             'fixed_user_codes', 'quantized_scoring', 'user_loss_weight', 'item_loss_weight', 'rvq_training')}
-        return f'ItemPrefixCSAShadow({settings}, fingerprint={model_fingerprint(self)})'
+        settings.update({key: getattr(self, key) for key, default in
+                         (('user_edge_scale', 1.), ('user_edge_weighting', 'uniform'))
+                         if getattr(self, key) != default})
+        return f'{type(self).__name__}({settings}, fingerprint={model_fingerprint(self)})'
