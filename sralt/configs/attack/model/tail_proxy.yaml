@@ -1,5 +1,5 @@
 name: TailProxyAttack
-revision: tail-proxy-bce1-balanced-v4
+revision: auc-only-v1-tail-proxy-bce1-balanced-v4
 attribute:
   _target_: sralt.attack.model.tail_proxy.TailProxyAttack
   num_quantizers: ${shadow.model.attribute.num_quantizers}
@@ -21,10 +21,9 @@ train:
     lr: 0.001
     weight_decay: 0.0001
     grad_clip_norm: 1.0
+  # Checkpoint selection uses public-validation All AUC only.
   metrics:
     - _target_: torchmetrics.AUROC
-      task: binary
-    - _target_: torchmetrics.F1Score
       task: binary
   early_stopping:
     _target_: sralt.utils.EarlyStopping

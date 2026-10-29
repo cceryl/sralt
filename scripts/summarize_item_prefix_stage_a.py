@@ -8,7 +8,7 @@ from pathlib import Path
 import statistics
 
 GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
-METRICS = ('AUROC', 'F1', 'TPR@1%')
+METRICS = ('AUROC', 'F1', 'TPR@5%')
 
 
 def stats(values):
@@ -130,14 +130,14 @@ def main():
                                            'jaccard_normalized_mae', 'full_path_change']) + ' |')
     report += ['', '## Paired relation results', '',
                'Each delta is prefix minus original item statistic, in absolute 0–1 units. Mean ± sample SD across seeds; no significance claim.', '',
-               '| Target | Data | View | Score | Group | Item AUC | Prefix AUC | ΔAUC | ΔF1 | ΔTPR@1% |',
+               '| Target | Data | View | Score | Group | Item AUC | Prefix AUC | ΔAUC | ΔF1 | ΔTPR@5% |',
                '| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |']
     for row in pair_summary:
         if row['view'] == 'train':
             continue
         v = row['values']
         cells = []
-        for metric in ['item_AUROC', 'prefix_AUROC', 'delta_AUROC', 'delta_F1', 'delta_TPR@1%']:
+        for metric in ['item_AUROC', 'prefix_AUROC', 'delta_AUROC', 'delta_F1', 'delta_TPR@5%']:
             value = v[metric]
             cells.append(f"{value['mean']:.6f} ± {value['sample_sd']:.6f}" if value['sample_sd'] is not None else f"{value['mean']:.6f} (n=1)")
         report.append(f"| {row['target']} | {row['dataset']} | {row['view']} | {row['score']} | {row['group']} | " + ' | '.join(cells) + ' |')

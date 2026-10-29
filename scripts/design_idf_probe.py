@@ -26,7 +26,7 @@ from sralt.utils import head_tail_split
 
 GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
 METHODS = ('idf_intersection', 'raw_intersection', 'public_degree', 'smia_mlp')
-METRICS = ('AUROC', 'F1', 'TPR@1%')
+METRICS = ('AUROC', 'F1', 'TPR@5%')
 
 
 def load(path):
@@ -84,9 +84,7 @@ def choose_threshold(scores, labels):
     tp = labels.cumsum()[ends]
     f1 = 2 * tp / (ends + 1 + labels.sum())
     index = ends[np.argmax(f1)]  # All score ties are included; prefer the higher threshold.
-    threshold = ((scores[index] + scores[index + 1]) / 2 if index + 1 < len(scores)
-                 else np.nextafter(scores[index], -np.inf))
-    return float(threshold), float(f1.max())
+    return float(scores[index]), float(f1.max())
 
 
 def metrics(labels, scores, threshold, weight):
@@ -94,10 +92,10 @@ def metrics(labels, scores, threshold, weight):
     y, s, w = labels[selected], scores[selected], weight[selected]
     positive, negative = int(w[y == 1].sum()), int(w[y == 0].sum())
     result = dict(samples=int(w.sum()), positives=positive, negatives=negative,
-                  AUROC=None, F1=None, **{'TPR@1%': None})
+                  f1_threshold=float(threshold), AUROC=None, F1=None, **{'TPR@5%': None})
     if not len(y):
         return result
-    predicted = s > threshold
+    predicted = s >= threshold
     tp = w[(y == 1) & predicted].sum()
     denominator = positive + w[predicted].sum()
     result['F1'] = float(2 * tp / denominator) if denominator else 0.
@@ -106,7 +104,7 @@ def metrics(labels, scores, threshold, weight):
         fpr, tpr, _ = roc_curve(y, s, sample_weight=w, drop_intermediate=False)
         fpr, indices = np.unique(fpr[::-1], return_index=True)
         tpr = tpr[::-1][indices]  # Last/highest TPR on each FPR plateau.
-        result['TPR@1%'] = float(np.interp(.01, fpr, tpr))
+        result['TPR@5%'] = float(np.interp(.05, fpr, tpr))
     return result
 
 
@@ -152,16 +150,20 @@ def evaluate(row, args, output):
     def probe_scores(pairs):
         return dict(idf_intersection=pairdot(weighted, pairs), raw_intersection=pairdot(rec, pairs),
                     public_degree=np.log1p(degree[pairs[0]]) + np.log1p(degree[pairs[1]]))
-    # Validation accesses only public relations. Hidden graph is accessed below, after thresholds freeze.
+    # Select and freeze thresholds using public validation All before hidden evaluation.
     val_pos = data.val_social_edge_index.numpy()
     val_rng = np.random.default_rng(seed + 2018)
     val_neg = sample_negatives(n, val_pos.shape[1], pair_ids(data.public_social_edge_index, n), val_rng)
     val_pairs = np.concatenate([val_pos, val_neg], axis=1)
     val_labels = np.r_[np.ones(val_pos.shape[1]), np.zeros(val_neg.shape[1])]
+    validation_scores = probe_scores(val_pairs)
+    with torch.no_grad():
+        validation_scores['smia_mlp'] = np.concatenate([
+            model.predict(torch.from_numpy(val_pairs[:, start:start + args.batch_size]), data.user_features).numpy()
+            for start in range(0, val_pairs.shape[1], args.batch_size)])
     thresholds, validation = {}, {}
-    for name, scores in probe_scores(val_pairs).items():
-        thresholds[name], validation[name] = choose_threshold(scores, val_labels)
-    thresholds['smia_mlp'] = .5
+    for name, val_scores in validation_scores.items():
+        thresholds[name], validation[name] = choose_threshold(val_scores, val_labels)
     rng = np.random.default_rng(seed + 1018)
     test_ids = pair_ids(data.test_social_edge_index, n)
     test_pos = np.stack([test_ids // n, test_ids % n])
@@ -189,7 +191,7 @@ def evaluate(row, args, output):
                       attack_revision=str(cfg.attack.model.revision), shadow_revision=str(cfg.shadow.model.revision),
                       tail_ratio=float(cfg.attack.tail_ratio), threads=args.threads,
                       formula='sum(log((N+1)/(item_user_coverage+1))) over shared queried items',
-                      thresholds=thresholds, validation_f1=validation,
+                      thresholds=thresholds, threshold_source='public validation All maximum F1', validation_f1=validation,
                       validation_rng=seed + 2018, test_rng=seed + 1018,
                       validation_negative_rule='uniform unique unordered pairs excluding all public edges',
                       test_negative_rule='uniform unique unordered true nonedges; equal to all hidden positives',

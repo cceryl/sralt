@@ -20,7 +20,7 @@ from sralt.attack.ensemble.evidence import requirements
 from sralt.attack.ensemble.training import (load_fusion_pair_pool, training_identity, load_oof_attack_evidence,
                                            load_fusion_model, predict_fusion)
 from sralt.attack.ensemble.diagnostics import complementarity, calibration_by_degree
-from sralt.utils.attack_groups import grouped_attack_report
+from sralt.utils.attack_groups import grouped_attack_report, optimal_f1_threshold
 
 
 PARITY_RTOL = 1e-5
@@ -125,10 +125,12 @@ def run(args, *, configuration_fn=expert_configuration, target_loader=load_targe
         model = fusion_loader(identity=identity, condition=name, settings=TRAINING, evidence=evidence,
                                   pool=pool, validation=validation, oof=oof if name in OOF_CONDITIONS else None,
                                   device=device, **common)
+        val_p = predict_fusion(model, evidence, validation['edge_index'], name)
+        threshold = optimal_f1_threshold(val_p, validation['labels'])
         probability = predict_fusion(model, evidence, protocol['test']['edge_index'], name)
         groups = grouped_attack_report(protocol['test']['edge_index'], probability, protocol['test']['labels'],
-                                       bundle.data[0], protocol['head'], protocol['tail'], instantiate(cfg.attack.test.metrics))
-        val_p = predict_fusion(model, evidence, validation['edge_index'], name)
+                                       bundle.data[0], protocol['head'], protocol['tail'], instantiate(cfg.attack.test.metrics),
+                                       f1_threshold=threshold)
         if name in ('csa', 'item_prefix_joint'):
             column = 0 if name == 'csa' else 1
             expected = torch.cat([evidence.batch(batch.to(device), scores=True)['logits'][:, column].sigmoid().cpu()
@@ -141,7 +143,7 @@ def run(args, *, configuration_fn=expert_configuration, target_loader=load_targe
                 p.requires_grad or p.grad is not None for m in bundle.models for p in m.parameters()):
             raise ValueError('Frozen formal expert state changed during fusion.')
         result['results'][name] = dict(groups={group: {key: groups[group][key] for key in GROUP_FIELDS}
-                                              for group in (*GROUPS, 'HH', 'HT')},
+                                              for group in GROUPS},
             training=getattr(model, 'training_summary', None),
             trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
             elapsed_seconds=time.monotonic() - started,

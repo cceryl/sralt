@@ -1,14 +1,12 @@
+# Final reporting only: validation-All-optimal F1 threshold shared by all five groups.
+# Training/early stopping uses validation-All AUC only; F1/TPR are report-only.
 metrics:
   - _target_: torchmetrics.AUROC
     task: binary
   - _target_: torchmetrics.F1Score
     task: binary
   - _target_: sralt.utils.TPRatFPR
-    target_fpr: 0.01
-  - _target_: torchmetrics.Precision
-    task: binary
-  - _target_: torchmetrics.Recall
-    task: binary
+    target_fpr: 0.05
 
 evaluation:
   test_batch_size: 2048

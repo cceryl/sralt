@@ -26,12 +26,12 @@ from sralt.attack import load_attack_data, load_attack_model
 from sralt.attack.data import AttackData, EvalAttackDataset
 from sralt.utils import head_tail_split, set_seed
 from sralt.utils.model import tensor_fingerprint
-from sralt.utils.attack_groups import grouped_attack_report
+from sralt.utils.attack_groups import grouped_attack_report, optimal_f1_threshold
 from run_restored_baseline import now, write_json
 from summarize_tail_proxy import CONDITIONS, EXPERIMENT_REVISION
 
 GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
-GROUP_FIELDS = ('samples', 'positives', 'negatives', 'AUROC', 'F1Score', 'TPR@FPR=0.01')
+GROUP_FIELDS = ('samples', 'positives', 'negatives', 'f1_threshold', 'AUROC', 'F1Score', 'TPR@FPR=0.05')
 
 
 def release(device):
@@ -74,10 +74,15 @@ def evaluate(model, data, cfg, protocol):
     edges, labels = protocol['test']['edge_index'], protocol['test']['labels']
     batch_size = cfg.attack.test.evaluation.test_batch_size
     inputs = data if hasattr(model, 'endpoint_features') else data.user_features
+    validation_edges = protocol['val']['edge_index']
+    validation_probs = torch.cat([model.predict(validation_edges[:, start:start + batch_size], inputs).cpu()
+                                  for start in range(0, validation_edges.size(1), batch_size)])
+    threshold = optimal_f1_threshold(validation_probs, protocol['val']['labels'])
     probabilities = torch.cat([model.predict(edges[:, start:start + batch_size], inputs).cpu()
                                for start in range(0, labels.numel(), batch_size)])
     groups = grouped_attack_report(edges, probabilities, labels, data,
-                                   protocol['head'], protocol['tail'], instantiate(cfg.attack.test.metrics))
+                                   protocol['head'], protocol['tail'], instantiate(cfg.attack.test.metrics),
+                                   f1_threshold=threshold)
     return {group: {key: groups[group][key] for key in GROUP_FIELDS} for group in GROUPS}
 
 

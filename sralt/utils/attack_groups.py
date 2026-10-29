@@ -1,13 +1,35 @@
-"""Final-test reports only: true-degree groups never become model inputs."""
+"""Final-test reports only: shared validation-All-optimal F1; true degree is report-only."""
 
 import math
 
 import torch
 
 
+REPORT_GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
+PRIMARY_GROUPS = ('All', 'Tail', 'TT')
+REPORT_REVISION = 'validation-all-best-f1-auc-selection-fpr05-v2'
+
+
+def optimal_f1_threshold(probabilities, labels):
+    """Maximize unweighted validation-All F1, including whole ties; prefer higher thresholds.
+
+    Decisions use p >= threshold. Choose this using public validation labels only, then freeze it for test.
+    It is independent of AUC-only checkpoint selection.
+    """
+    if not labels.numel():
+        raise ValueError('Cannot select an F1 threshold from empty validation All.')
+    order = probabilities.argsort(descending=True, stable=True)
+    scores, y = probabilities[order], labels[order]
+    ends = torch.cat([scores[:-1] != scores[1:], torch.ones(1, dtype=torch.bool, device=scores.device)])
+    counts = torch.arange(1, y.numel() + 1, device=y.device)[ends]
+    tp = y.cumsum(0)[ends]
+    f1 = 2 * tp.double() / (counts + y.sum()).clamp_min(1)
+    return float(scores[ends][f1.argmax()])
+
+
 @torch.no_grad()
-def grouped_attack_report(edges, probabilities, labels, data, head, tail, metrics):
-    """HH/HT/TT count pairs once; Tail subgroups keep the endpoint weighting."""
+def grouped_attack_report(edges, probabilities, labels, data, head, tail, metrics, *, f1_threshold):
+    """Five test groups share the frozen public-validation-All F1 threshold."""
     edges, probabilities, labels = edges.cpu(), probabilities.cpu(), labels.cpu()
     is_head = torch.zeros(data.num_users, dtype=torch.bool)
     is_head[head.cpu()] = True
@@ -16,17 +38,18 @@ def grouped_attack_report(edges, probabilities, labels, data, head, tail, metric
     degree = torch.bincount(data.shadow_social_edge_index[0].cpu(), minlength=data.num_users)
     left, right = edges
     head_count = is_head[left].long() + is_head[right].long()
+    threshold = float(f1_threshold)
     weights = {'All': torch.ones_like(left), 'Head': head_count, 'Tail': 2 - head_count,
-               'HH': (head_count == 2).long(), 'HT': (head_count == 1).long(), 'TT': (head_count == 0).long()}
-    for name, selected in [('isolated_Tail', is_tail & (degree == 0)),
-                            ('non_isolated_Tail', is_tail & (degree > 0))]:
-        weights[name] = selected[left].long() + selected[right].long()
+               'TT': (head_count == 0).long()}
+    isolated = is_tail & (degree == 0)
+    weights['isolated_Tail'] = isolated[left].long() + isolated[right].long()
     report = {}
     for group, weight in weights.items():
         indices = torch.arange(labels.numel()).repeat_interleave(weight)
         y, p = labels[indices], probabilities[indices]
         result = dict(samples=y.numel(), positives=int(y.sum()), negatives=int((y == 0).sum()),
-                      predicted_positive_rate=float((p > .5).float().mean()) if y.numel() else None)
+                      f1_threshold=threshold, threshold_source='public validation All maximum F1',
+                      predicted_positive_rate=float((p >= threshold).float().mean()) if y.numel() else None)
         for metric in metrics:
             name = type(metric).__name__.removeprefix('Binary')
             if name == 'TPRatFPR':
@@ -36,7 +59,9 @@ def grouped_attack_report(edges, probabilities, labels, data, head, tail, metric
             if y.numel() and (not requires_both_classes or y.unique().numel() == 2):
                 calculator = metric.clone().cpu()
                 calculator.reset()
-                calculated = float(calculator(p, y))
+                # Integer decisions avoid torchmetrics' special handling of 0/1 thresholds.
+                predictions = (p >= threshold).long() if name in ('F1Score', 'F1') else p
+                calculated = float(calculator(predictions, y))
                 value = calculated if math.isfinite(calculated) else None
             result[name] = value
         report[group] = result

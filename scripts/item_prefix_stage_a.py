@@ -38,7 +38,7 @@ from sralt.utils.model import tensor_fingerprint
 
 REVISION = 'item-prefix-stage-a-v1'
 GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
-METRICS = ('AUROC', 'F1', 'TPR@1%')
+METRICS = ('AUROC', 'F1', 'TPR@5%')
 
 
 def write_json(path, value):
@@ -192,7 +192,7 @@ def evaluation_protocol(data, seed):
 def relation_report(scores, validation_scores, protocol, weights):
     score, validation = np.round(scores, 10), np.round(validation_scores, 10)
     threshold, val_f1 = choose_threshold(validation, protocol['val']['labels'])
-    return dict(threshold=threshold, validation_f1=val_f1,
+    return dict(threshold=threshold, threshold_source='public validation All maximum F1', validation_f1=val_f1,
                 groups={group: metrics(protocol['test']['labels'], score, threshold, weights[group]) for group in GROUPS})
 
 
@@ -342,7 +342,7 @@ def main():
         summarize(args.output)
         return
     args.output.mkdir(parents=True, exist_ok=args.resume)
-    identity = dict(revision=REVISION, targets=args.targets, datasets=args.datasets, seeds=args.seeds,
+    identity = dict(report_revision='validation-all-best-f1-auc-selection-fpr05-v2', revision=REVISION, targets=args.targets, datasets=args.datasets, seeds=args.seeds,
                     levels=args.levels, capacity=args.capacity, max_iter=args.max_iter, threads=args.threads,
                     device='cpu', torch=torch.__version__, sklearn=sklearn.__version__, numpy=np.__version__)
     if args.resume:

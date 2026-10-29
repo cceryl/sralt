@@ -6,7 +6,8 @@ Run from any directory with the project's Python environment (inside Apptainer):
     python scripts/comparison_report.py --datasets ciao --targets lightgcn \
         --pairs smia:mlp csa:mlp miner:miner miner:enminer --seeds 42 43
     python scripts/comparison_report.py --target-metrics --shadow-metrics
-    python scripts/comparison_report.py --allow-training
+    python scripts/comparison_report.py --allow-training --jobs 2 --threads 2
+    python scripts/comparison_report.py --resume --run-dir runs/comparison-jobs/<batch>
     python scripts/comparison_report.py --pairs ensemble:ensemble ensemble:shadow_user_fusion
 
 Metric records are stored in .cache/comparison_report. Model/data caches use
@@ -29,8 +30,8 @@ import copy
 import argparse
 
 # Edit these defaults, then run without arguments. CLI options override each field.
-DATASETS = ["ciao", "epinions", "flickr", "yelp"]
-TARGET_MODELS = ["design", "gdmsr", "egcl"] # lightgcn
+DATASETS = ["ciao", "flickr"] # ["ciao", "epinions", "flickr", "yelp"]
+TARGET_MODELS = ["design", "gdmsr"] # ["design", "gdmsr", "egcl", "lightgcn"]
 MODEL_PAIRS = [("ensemble", "ensemble"), ("ensemble", "shadow_user_fusion"),
                ("smia", "mlp"), ("csa", "mlp"), ("tail_proxy", "tail_proxy"),
                ("item_prefix", "item_prefix"), ("item_prefix_csa", "item_prefix_csa")]
@@ -39,14 +40,16 @@ INCLUDE_TARGET_METRICS = True
 INCLUDE_SHADOW_METRICS = True
 ALLOW_TRAINING = False  # Test existing models; leave missing training caches untrained.
 OUTPUT = "runs/comparison.html"
+JOBS = 2
+THREADS = 2
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = ROOT / ".cache/comparison_report"
-CACHE_SCHEMA = 1
+CACHE_SCHEMA = 2
 GROUPS = ("all", "head", "tail")
 ATTACK_SUBGROUPS = {
-    "head_head": "HH", "head_tail": "HT", "tail_tail": "TT",
+    "tail_tail": "TT",
     "isolated_tail": "isolated_Tail",
 }
 
@@ -65,9 +68,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-training", action=argparse.BooleanOptionalAction, default=ALLOW_TRAINING,
                         help="train on model cache misses; existing models are tested even without this flag")
     parser.add_argument("--refresh-metrics", action="store_true", help="retest via existing loaders; do not force retraining")
+    parser.add_argument('--jobs', type=int, default=JOBS, help='maximum concurrent case workers')
+    parser.add_argument('--threads', type=int, default=THREADS, help='CPU threads per worker')
+    parser.add_argument('--run-dir', type=Path, help='manifest, per-worker logs and partial metrics')
+    parser.add_argument('--resume', action='store_true', help='resume the saved run; reuse its experiment options')
+    parser.add_argument('--summarize-only', action='store_true', help='rebuild HTML from saved worker results/caches')
+    parser.add_argument('--launch-interval', type=float, default=10., help='seconds between worker launches')
+    parser.add_argument('--progress-interval', type=float, default=30.)
+    parser.add_argument('--worker-request', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--worker-output', type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true", help="list combinations and metric cache hits without evaluation")
     parser.add_argument("--output", type=Path, default=Path(OUTPUT))
     args = parser.parse_args(argv)
+    if args.jobs < 1 or args.threads < 1:
+        parser.error('jobs and threads must be positive')
+    if args.launch_interval < 0 or args.progress_interval <= 0:
+        parser.error('launch-interval must be nonnegative; progress-interval must be positive')
+    if (args.resume or args.summarize_only) and args.run_dir is None:
+        parser.error('--resume/--summarize-only requires --run-dir')
+    if args.resume and args.summarize_only:
+        parser.error('--resume and --summarize-only are mutually exclusive')
+    if args.dry_run and (args.resume or args.summarize_only):
+        parser.error('--dry-run cannot be combined with --resume/--summarize-only')
+    if bool(args.worker_request) != bool(args.worker_output):
+        parser.error('both worker paths are required')
     for pair in args.pairs:
         if len(pair.split(":")) != 2 or not all(pair.split(":")):
             parser.error(f"expected shadow:attack, got {pair!r}")
@@ -89,7 +113,7 @@ def source_digest() -> str:
             digest.update(str(path.relative_to(ROOT)).encode())
             digest.update(path.read_bytes())
     for name in ('comparison_report.py', 'ensemble_pipeline.py', 'csa_itemprefix_ensemble_case.py',
-                 'csa_itemprefix_ensemble_recipe.py', 'tail_proxy_case.py'):
+                 'csa_itemprefix_ensemble_recipe.py', 'tail_proxy_case.py', 'comparison_report_jobs.py'):
         digest.update(name.encode())
         digest.update((ROOT / 'scripts' / name).read_bytes())
     return digest.hexdigest()
@@ -188,6 +212,8 @@ def save_metrics(path: Path, identity: dict, values: Any, config: Any,
                 metrics[group][name] = float(value) if value is not None and math.isfinite(value) else None
             counts[group] = {key: result[key] for key in ("samples", "positives", "negatives")}
         record["group_counts"] = counts
+        record["f1_threshold"] = subgroup_metrics["All"]["f1_threshold"]
+        record["threshold_source"] = subgroup_metrics["All"]["threshold_source"]
     path.parent.mkdir(parents=True, exist_ok=True)
     # Write a complete record atomically, including for interrupted multi-seed runs.
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
@@ -250,9 +276,18 @@ def evaluate_missing(config: Any, identities: dict, records: dict, allow_trainin
     from sralt.target import load_target_data, load_target_model, test_target_model
 
     instantiate(config.filter_warnings)
+    import torch
+    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", THREADS)))
     device = instantiate(config.device)
     common = dict(seed=config.seed, deterministic=config.deterministic)
-    target_data = load_target_data(**common, config=config.target.data).to(device)
+    # Target data is shared across Targets/workers for the same dataset/seed.
+    # Use the same lock as the experiment workers and ensemble case runner.
+    import fcntl
+    lock_dir = Path(tempfile.gettempdir()) / 'sralt-target-data-locks'
+    lock_dir.mkdir(exist_ok=True)
+    with (lock_dir / f'{config.target.data.name.lower()}-{config.seed}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        target_data = load_target_data(**common, config=config.target.data).to(device)
     target = load_report_model("target", load_target_model, allow_training,
                                **common, device=device, config=config.target.model, data=target_data, writer=None)
     if "target" in identities and records["target"] is None:
@@ -301,7 +336,7 @@ def collect_ensemble(config: Any, identities: dict, records: dict, status: dict,
             try:
                 with tempfile.TemporaryDirectory(prefix='ensemble-', dir=CACHE_DIR) as temporary:
                     artifact = execute(config, temporary, allow_training=args.allow_training,
-                                       cache_loader=load_report_model)
+                                       cache_loader=load_report_model, threads=args.threads)
                 computed = True
             except MissingTrainingCache as error:
                 missing.append(str(error))
@@ -312,7 +347,7 @@ def collect_ensemble(config: Any, identities: dict, records: dict, status: dict,
             for group, native_group in group_map.items():
                 values = result['groups'].get(native_group)
                 if values is None:
-                    continue  # Historical experiments did not export HH/HT.
+                    continue  # Incomplete historical reports cannot supply this group.
                 metrics[group] = {}
                 for spec in config.attack.test.metrics:
                     name = metric_name(spec)
@@ -322,7 +357,8 @@ def collect_ensemble(config: Any, identities: dict, records: dict, status: dict,
                     metrics[group][name] = value if value is not None and math.isfinite(value) else None
                 counts[group] = {k: values[k] for k in ('samples', 'positives', 'negatives')}
             record = dict(identity=identities['attack'], created_at=document['updated_at'],
-                metrics=metrics, group_counts=counts,
+                metrics=metrics, group_counts=counts, f1_threshold=result['groups']['All']['f1_threshold'],
+                threshold_source='public validation All maximum F1',
                 ensemble=dict(condition=condition, origin='evaluated' if computed else 'saved_experiment',
                     artifact=None if computed else artifact['path'],
                     source_fingerprint=document['source_fingerprint'], evaluation_id=document['evaluation_id'],
@@ -351,8 +387,8 @@ def collect_ensemble(config: Any, identities: dict, records: dict, status: dict,
     return '; '.join(missing) or None
 
 
-def collect(args: argparse.Namespace) -> dict:
-    sources = source_digest()
+def collect(args: argparse.Namespace, *, sources: str | None = None, on_row=None, log_progress: bool = True) -> dict:
+    sources = sources or source_digest()
     rows = []
     stages = ["attack"] + (["target"] if args.target_metrics else []) + (["shadow"] if args.shadow_metrics else [])
     combinations = [(*case, weight)
@@ -373,8 +409,9 @@ def collect(args: argparse.Namespace) -> dict:
             hit = path.is_file() and not refresh
             records[stage] = json.loads(path.read_text(encoding="utf-8")) if hit else None
             status[stage] = "cached" if hit else "missing"
-        logging.info("[%d/%d] %s / %s / %s / seed=%d metric cache: %s", index, len(combinations),
-                     dataset, target, pair, seed, status)
+        if log_progress:
+            logging.info("[%d/%d] %s / %s / %s / seed=%d metric cache: %s", index, len(combinations),
+                         dataset, target, pair, seed, status)
         missing_reason = None
         if config.attack.model.get('ensemble_condition') is not None:
             missing_reason = collect_ensemble(config, identities, records, status, args, dataset, target)
@@ -394,17 +431,22 @@ def collect(args: argparse.Namespace) -> dict:
                          attack_group_counts=records["attack"].get("group_counts", {}) if records["attack"] else {},
                          ensemble=records['attack'].get('ensemble') if records['attack'] else None,
                          evaluated_at={stage: record["created_at"] if record else None for stage, record in records.items()}))
+        if on_row is not None:
+            on_row(rows[-1])
     return {"rows": rows, "stages": stages, "generated_at": datetime.now().astimezone().isoformat(),
             "namespace": os.environ.get("SRALT_CACHE_VERSION", "default"), "sources": sources,
             "allow_training": args.allow_training,
-            "attack_metrics": [metric_name(m) for m in config.attack.test.metrics][:3]}  # type: ignore
+            "attack_metrics": [metric_name(m) for m in config.attack.test.metrics]}  # type: ignore
 
 
 def write_report(payload: dict, output: Path) -> None:
     # JSON is data, never executable script; prevent labels from ending the element.
     data = json.dumps(payload, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(HTML.replace("__REPORT_DATA__", data), encoding="utf-8")
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(HTML.replace("__REPORT_DATA__", data))
+    temporary.replace(output)
 
 
 HTML = r'''<!doctype html>
@@ -420,19 +462,20 @@ h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:0 0 16px}.muted,small{
 <header><h1>SRALT <span class="muted">/ 对比实验</span></h1><p class="muted" id="meta"></p><p class="muted">ensemble / ensemble：默认S0，两完整专家原始概率等权平均。ensemble / shadow_user_fusion：U＋公开度，投影两路Shadow用户向量后分类。两项没有单一的合并Shadow推荐指标；历史产物未记录的人群指标显示为缺失。</p></header>
 <section class="card"><h2>筛选与显示</h2><div class="controls" id="filters"></div>
 <div class="toolbar" style="margin-top:18px;margin-bottom:0"><label><input type="checkbox" id="aggregate" checked>合并种子（均值 ± 样本标准差）</label><label><input type="checkbox" id="recommendation">显示 Target / Shadow 指标</label><label><input type="checkbox" id="hide-empty">隐藏整行无记录的组合</label><label>Baseline（Shadow / Attack）<select id="baseline"><option value="">不比较</option></select></label><button id="reset">重置筛选</button><button id="csv">导出当前表格 CSV</button><button id="json">导出完整结果 JSON</button></div></section>
-<section class="card"><div id="summary"></div><p class="muted">数值范围 0–1；攻击指标越高表示攻击效果越强、隐私泄漏越大。均值按种子等权计算，误差线表示 ±1 样本标准差；单种子不估计标准差。缺失与非有限值显示为 —，不参与均值。</p><details><summary>评估口径与缓存信息</summary><p>头尾用户按现有 pipeline 的社交度划分，尾部比例见完整结果。Head/Tail 按关系端点计权：一个同组端点计一次，两个同组端点计两次；All 每条关系计一次。Head–Head / Head–Tail / Tail–Tail 分别表示两端均为头部、一头一尾、两端均为尾部，每条关系计一次。Isolated Tail 为 Shadow 社交图中度为 0 的尾部用户，按符合条件的端点计权，两个端点均符合时计两次；空组或需要正负两类但缺少一类时显示 —。不同数据集、Target 分面展示，不混合平均。LightGCN 仅使用用户—物品交互，是非社交对照；其关系推断效果不能直接解释为使用社交边训练导致的成员泄漏。</p><p>缓存独立于训练 pipeline，键包含配置、种子、代码、数据文件元信息及 SRALT_CACHE_VERSION。相同配置重训后，请使用 --refresh-metrics 更新；该选项仍复用现有训练缓存。页面筛选不会运行实验。结果状态 cached/computed/missing 与测试时间见 JSON。</p><p id="provenance" class="muted"></p></details></section>
+<section class="card"><div id="summary"></div><p class="muted">数值范围 0–1；攻击指标越高表示攻击效果越强、隐私泄漏越大。均值按种子等权计算，误差线表示 ±1 样本标准差；单种子不估计标准差。缺失与非有限值显示为 —，不参与均值。</p><details><summary>评估口径与缓存信息</summary><p>头尾用户按现有 pipeline 的社交度划分，尾部比例见完整结果。Head/Tail 按关系端点计权：一个同组端点计一次，两个同组端点计两次；All 每条关系计一次。Tail–Tail 表示两端均为尾部，每条关系计一次。最终报告为 AUC、最优阈值 F1、TPR@FPR=5%；F1 阈值在公开验证集 All 上最大化后冻结，五组共用，等分时选较高阈值，判正规则为分数 ≥ 阈值。所有攻击模型仅以公开验证All AUC选模，F1与TPR均不参与选模。★ 标记重点组 All、Tail、Tail–Tail。Isolated Tail 为 Shadow 社交图中度为 0 的尾部用户，按符合条件的端点计权，两个端点均符合时计两次；空组或需要正负两类但缺少一类时显示 —。不同数据集、Target 分面展示，不混合平均。LightGCN 仅使用用户—物品交互，是非社交对照；其关系推断效果不能直接解释为使用社交边训练导致的成员泄漏。</p><p>缓存独立于训练 pipeline，键包含配置、种子、代码、数据文件元信息及 SRALT_CACHE_VERSION。相同配置重训后，请使用 --refresh-metrics 更新；该选项仍复用现有训练缓存。页面筛选不会运行实验。结果状态 cached/computed/missing 与测试时间见 JSON。</p><p id="provenance" class="muted"></p></details></section>
 <section class="card"><h2>攻击效果</h2><p class="muted">点击列标题排序；绿色标记相同数据集与 Target（逐种子模式再按 seed 分组）内的最高值。n 为参与该指标均值的有效种子数。</p><p id="baseline-note" class="muted" hidden>Δ =（当前值 − baseline 值）/ baseline 值 × 100%，是相对变化，不是百分点。仅比较相同数据集、Target；逐种子时还匹配 seed。合并时使用所选种子各自的有效均值（有效种子数可能不同）。Baseline 不受 Shadow/Attack 行筛选影响；缺失或为零时显示 Δ —，悬停可查看原因。正数表示攻击指标提高，隐私泄漏更强。</p><div class="table-wrap" id="attack-table"></div></section>
 <section class="card"><h2>SAL 配对效果</h2><p class="muted">逐种子匹配无防御基线，显示相对下降 (基线 − SAL) / 基线。攻击指标下降为防御效果，推荐指标下降为效用损失。先计算各匹配种子的变化，再汇总均值与样本标准差。</p><div class="table-wrap" id="defense-table"></div></section>
-<section class="card"><h2>指标图表</h2><div class="toolbar"><label>指标 <select id="chart-metric"></select></label><label>人群 <select id="chart-group"><option value="all">全部</option><option value="head">头部</option><option value="tail">尾部</option><option value="head_head">Head–Head</option><option value="head_tail">Head–Tail</option><option value="tail_tail">Tail–Tail</option><option value="isolated_tail">Isolated Tail</option></select></label></div><div class="charts" id="charts"></div></section>
+<section class="card"><h2>指标图表</h2><div class="toolbar"><label>指标 <select id="chart-metric"></select></label><label>人群 <select id="chart-group"><option value="all">全部</option><option value="head">头部</option><option value="tail">尾部</option><option value="tail_tail">Tail–Tail</option><option value="isolated_tail">Isolated Tail</option></select></label></div><div class="charts" id="charts"></div></section>
 <section class="card" id="rec-section" hidden><h2>Target / Shadow 推荐指标</h2><p class="muted">同一阶段相同配置的结果复用。若生成时未启用，请用 --target-metrics / --shadow-metrics 重新运行脚本。</p><div class="table-wrap" id="rec-table"></div></section>
 <script type="application/json" id="report-data">__REPORT_DATA__</script>
 <script>
 'use strict';
 const report=JSON.parse(document.getElementById('report-data').textContent);
-const $=id=>document.getElementById(id), groups={all:'全部',head:'头部',tail:'尾部',head_head:'Head–Head',head_tail:'Head–Tail',tail_tail:'Tail–Tail',isolated_tail:'Isolated Tail'};
+const $=id=>document.getElementById(id), groups={all:'全部用户 ★',tail:'尾部用户（端点加权）★',tail_tail:'Tail–Tail ★',head:'头部用户（端点加权）',isolated_tail:'Isolated Tail'};
 for(const row of report.rows)row.defense??='None';
 const dimensions={dataset:'数据集',target:'Target',defense:'防御',shadow:'Shadow',attack:'Attack',seed:'种子'};
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const metricLabel=value=>({AUROC:'AUC',F1Score:'F1（验证All最优阈值）'}[value]||value);
 const choices={}, initial={}; let sortKey='dataset',sortDirection=1,currentTable={headers:[],rows:[]};
 const unique=items=>[...new Set(items)];
 for(const [key,label] of Object.entries(dimensions)){
@@ -443,13 +486,13 @@ for(const [key,label] of Object.entries(dimensions)){
   $('filters').append(field);
 }
 for(const [key,label,values] of [['groups','表格人群',Object.keys(groups)],['metrics','表格攻击指标',report.attack_metrics]]){
-  choices[key]=new Set(values);initial[key]=values;const field=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=label;field.append(legend);
-  for(const value of values){const node=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=true;input.dataset.dimension=key;input.value=value;node.append(input,document.createTextNode(groups[value]||value));field.append(node);input.onchange=()=>{input.checked?choices[key].add(value):choices[key].delete(value);render()};}
+  choices[key]=new Set(key==='groups'?['all','tail','tail_tail']:values);initial[key]=[...choices[key]];const field=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=label;field.append(legend);
+  for(const value of values){const node=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=choices[key].has(value);input.dataset.dimension=key;input.value=value;node.append(input,document.createTextNode(groups[value]||metricLabel(value)));field.append(node);input.onchange=()=>{input.checked?choices[key].add(value):choices[key].delete(value);render()};}
   $('filters').append(field);
 }
 $('meta').textContent=`生成时间 ${report.generated_at} · 命名空间 ${report.namespace} · 单文件离线报告`;
 $('provenance').textContent=`源码指纹 ${report.sources} · 模式 ${report.allow_training?'指标缓存优先；模型缺失时允许训练':'指标缓存优先；复用已有模型测试，禁止训练'}`;
-for(const metric of report.attack_metrics){const option=document.createElement('option');option.value=metric;option.textContent=metric;$('chart-metric').append(option);}
+for(const metric of report.attack_metrics){const option=document.createElement('option');option.value=metric;option.textContent=metricLabel(metric);$('chart-metric').append(option);}
 for(const pair of unique(report.rows.map(row=>JSON.stringify([row.shadow,row.attack])))){
   const option=document.createElement('option');option.value=pair;option.textContent=JSON.parse(pair).join(' / ');$('baseline').append(option);
 }
@@ -479,7 +522,7 @@ function relativeChange(row,group,metric){
     reason:`baseline ${shadow} / ${attack}: ${statisticText(base)}；当前: ${statisticText(current)}`};
 }
 function changeLabel(change){return change.isBaseline?'baseline':`Δ ${change.text}`;}
-function columns(){return [...choices.groups].flatMap(group=>[...choices.metrics].map(metric=>({group,metric,key:`${group}|${metric}`,label:`${groups[group]} · ${metric}`})));}
+function columns(){return [...choices.groups].flatMap(group=>[...choices.metrics].map(metric=>({group,metric,key:`${group}|${metric}`,label:`${groups[group]} · ${metricLabel(metric)}`})));}
 function sorted(rows,cols){return [...rows].sort((a,b)=>{const col=cols.find(c=>c.key===sortKey);const av=col?metricStats(a,'attack',col.group,col.metric).mean:a[sortKey],bv=col?metricStats(b,'attack',col.group,col.metric).mean:b[sortKey];if(av==null)return bv==null?0:1;if(bv==null)return -1;return (typeof av==='number'?av-bv:String(av).localeCompare(String(bv)))*sortDirection;});}
 function renderTable(rows){const cols=columns(),dims=['dataset','target','defense','shadow','attack',...($('aggregate').checked?[]:['seed'])],hasBaseline=Boolean($('baseline').value),headers=[...dims.map(k=>dimensions[k]),'有效/所选种子',...(hasBaseline?['Baseline']:[]),...cols.flatMap(c=>hasBaseline?[c.label,`${c.label} · 相对 baseline (%)`]:[c.label])];
   currentTable={headers,rows:[]};if(!rows.length){$('attack-table').innerHTML='<div class="empty">没有符合筛选的组合。</div>';return;}
@@ -497,7 +540,7 @@ function renderCharts(rows){const metric=$('chart-metric').value,group=$('chart-
     facet.forEach((row,i)=>{const y=36+i*42,s=metricStats(row,'attack',group,metric),change=relativeChange(row,group,metric),label=`${row.defense} / ${row.shadow} / ${row.attack}${$('aggregate').checked?'':` / ${row.seed}`}`,color=['#3978d2','#1b927f','#9866c9','#da8242'][initial.shadow.indexOf(row.shadow)%4];
       svg+=`<text x="${left-12}" y="${y+12}" text-anchor="end" font-size="13">${escapeHTML(label)}</text>`;
       if(s.n){const x=left+s.mean*scale,lo=left+Math.max(0,s.mean-(s.sd||0))*scale,hi=left+Math.min(1,s.mean+(s.sd||0))*scale;svg+=`<rect x="${left}" y="${y}" width="${Math.max(0,s.mean*scale)}" height="20" rx="3" fill="${color}"><title>${escapeHTML(label+' · '+statisticText(s)+(change?' · '+changeLabel(change):''))}</title></rect>`;if(s.sd!==null)svg+=`<path d="M ${lo} ${y+10} H ${hi} M ${lo} ${y+5} V ${y+15} M ${hi} ${y+5} V ${y+15}" stroke="#173047" fill="none"/>`;svg+=`<text x="${width-right+8}" y="${y+13}" font-size="12">${number(s.mean)}</text>`;}else svg+=`<text x="${left+8}" y="${y+13}" font-size="12">无有效结果</text>`;
-    });svg+='</svg>';const node=document.createElement('div');node.className='chart';node.innerHTML=`<h2>${escapeHTML(facet[0].dataset)} / ${escapeHTML(facet[0].target)}</h2><small>${escapeHTML(metric)} · ${groups[group]}</small>${svg}`;$('charts').append(node);}
+    });svg+='</svg>';const node=document.createElement('div');node.className='chart';node.innerHTML=`<h2>${escapeHTML(facet[0].dataset)} / ${escapeHTML(facet[0].target)}</h2><small>${escapeHTML(metricLabel(metric))} · ${groups[group]}</small>${svg}`;$('charts').append(node);}
 }
 function renderRecommendation(rows){$('rec-section').hidden=!$('recommendation').checked;if($('rec-section').hidden)return;let html='<table><thead><tr><th>数据集</th><th>Target</th><th>防御</th><th>Shadow</th><th>阶段</th><th>指标</th><th>均值 ± 标准差</th></tr></thead><tbody>';const seen=new Set();let count=0;
   for(const row of rows)for(const stage of ['target','shadow']){const metrics=unique(row.runs.flatMap(r=>Object.keys(r.results[stage]?.all||{})));const base=[row.dataset,row.target,row.defense,...(stage==='shadow'?[row.shadow]:[]),...($('aggregate').checked?[]:[row.seed])];for(const metric of metrics){const key=JSON.stringify([stage,metric,...base]);if(seen.has(key))continue;seen.add(key);count++;const matching=selectedRows().filter(r=>r.dataset===row.dataset&&r.target===row.target&&r.defense===row.defense&&(stage==='target'||r.shadow===row.shadow)&&($('aggregate').checked||r.seed===row.seed));const perSeed=new Map(matching.filter(r=>r.results[stage]).map(r=>[r.seed,r]));const s=stats([...perSeed.values()].map(r=>r.results[stage]?.all?.[metric]));html+='<tr>'+[row.dataset,row.target,row.defense,stage==='shadow'?row.shadow:'—',stage,metric].map(v=>`<td>${escapeHTML(v)}</td>`).join('')+`<td>${escapeHTML(($('aggregate').checked?'':`seed=${row.seed} · `)+statisticText(s))}</td></tr>`;}}
@@ -535,16 +578,18 @@ render();
 </script></html>'''
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     os.chdir(ROOT)  # Existing pipeline paths/caches are relative to repository root.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    payload = collect(args)
-    if not args.dry_run:
-        output = args.output.resolve()
-        write_report(payload, output)
-        logging.info("HTML report: %s", output)
+    from comparison_report_jobs import run, run_worker
+    if args.worker_request is not None:
+        return run_worker(args, collect, source_digest)
+    if args.dry_run:
+        collect(args)
+        return 0
+    return run(args, collect, write_report, source_digest)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

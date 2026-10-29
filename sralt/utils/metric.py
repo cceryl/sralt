@@ -140,11 +140,21 @@ def compute_attack_metrics(
     dataset = getattr(eval_loader, 'dataset', None)
     report_test = getattr(dataset, 'split', None) == 'test' and hasattr(dataset, 'attack_data')
     test_batches = []
+    if report_test:
+        from sralt.attack.data import EvalAttackDataset
+        from .attack_groups import optimal_f1_threshold
+        validation = EvalAttackDataset(dataset.attack_data, split='val')
+        batch_size = eval_loader.batch_size or 2048
+        validation_probs = [predictor(edges[0], edges[1]).cpu()
+                            for edges in validation.edge_index.split(batch_size, dim=1)]
+        threshold = optimal_f1_threshold(torch.cat(validation_probs) if validation_probs else torch.empty(0),
+                                         validation.labels.cpu())
 
     for user1, user2, labels in eval_loader:
         probs = predictor(user1, user2)
         if report_test:
             test_batches.append((torch.stack([user1, user2]).cpu(), probs.cpu(), labels.cpu()))
+            continue
 
         for calculator in calculators['all']:
             calculator.update(probs, labels)
@@ -163,16 +173,24 @@ def compute_attack_metrics(
     def compute_group_metrics(group: str) -> list[float]:
         return [typing.cast(torch.Tensor, calculator.compute()).item() for calculator in calculators[group]]
 
-    results = compute_group_metrics('all'), compute_group_metrics('head'), compute_group_metrics('tail')
     if report_test:
         from .attack_groups import grouped_attack_report
-        edges = torch.cat([batch[0] for batch in test_batches], dim=1)
-        probs = torch.cat([batch[1] for batch in test_batches])
-        labels = torch.cat([batch[2] for batch in test_batches])
-        report = grouped_attack_report(edges, probs, labels, dataset.attack_data, head_indices, tail_indices, metrics)
+        edges = (torch.cat([batch[0] for batch in test_batches], dim=1) if test_batches
+                 else torch.empty((2, 0), dtype=torch.long))
+        probs = torch.cat([batch[1] for batch in test_batches]) if test_batches else torch.empty(0)
+        labels = (torch.cat([batch[2] for batch in test_batches]) if test_batches
+                  else torch.empty(0, dtype=torch.long))
+        report = grouped_attack_report(edges, probs, labels, dataset.attack_data, head_indices, tail_indices, metrics,
+                                       f1_threshold=threshold)
         dataset.attack_data.subgroup_metrics = report
         logging.info('Attack test subgroups: %s', json.dumps(report))
-    return results
+        # Final reports and legacy three-list callers must use identical F1 decisions.
+        names = [type(m).__name__.removeprefix('Binary') if not isinstance(m, TPRatFPR)
+                 else f'TPR@FPR={m.target_fpr:g}' for m in metrics]
+        results = tuple([float(report[group][name]) if report[group][name] is not None else float('nan')
+                         for name in names] for group in ('All', 'Head', 'Tail'))
+        return results
+    return compute_group_metrics('all'), compute_group_metrics('head'), compute_group_metrics('tail')
 
 
 class TPRatFPR(Metric):

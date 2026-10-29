@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
-METRICS = ('AUROC', 'F1', 'TPR@1%')
+METRICS = ('AUROC', 'F1', 'TPR@5%')
 
 
 def describe(values):
@@ -50,7 +50,7 @@ def main():
     for dataset in datasets:
         rows = [r for r in cases if r['dataset'] == dataset]
         for method, old_method in [('idf_intersection', 'rec_idf_overlap'), ('raw_intersection', 'rec_overlap')]:
-            for metric, old_metric in [('AUROC', 'auc'), ('TPR@1%', 'tpr01')]:
+            for metric, old_metric in [('AUROC', 'auc')]:
                 pairs = [(r, q) for r in rows for q in old if q['dataset'] == dataset and q['target'] == 'DESIGN'
                          and q['seed'] == r['seed']]
                 current = [r['groups'][method]['All'][metric] for r, _ in pairs]
@@ -67,7 +67,7 @@ def main():
                 ('Ciao', 'TT', 'AUROC', .9223), ('Ciao', 'isolated_Tail', 'AUROC', .8929),
                 ('Flickr', 'Tail', 'AUROC', .7904), ('Flickr', 'Tail', 'TPR@1%', .1534)]
     for dataset, group, metric, previous in old_tail:
-        if dataset not in datasets:
+        if dataset not in datasets or metric not in METRICS:
             continue
         current = lookup[(dataset, 'idf_intersection', group)][metric]
         history.append(dict(source='2026-10-22', path=old_tail_path, dataset=dataset,
@@ -79,19 +79,19 @@ def main():
     write_csv(args.run_dir / 'historical_comparison.csv', history)
     lines = ['# DESIGN：IDF交集统计评分', '',
              'Ciao/Flickr、seed42–46；IDF、原始交集、公开训练度数与现有SMIA→MLP在同一批诊断用户对上评价。', '',
-             '分数为共同Top-30物品的sum log((N+1)/(c_i+1))。无Shadow/分类器训练；F1阈值仅以公开验证All最大F1确定，所有测试分组共用。', '',
+             '分数为共同Top-30物品的sum log((N+1)/(c_i+1))。无Shadow/分类器训练；F1阈值以公开验证集All最大F1确定并冻结，五组共用；All、Tail、TT为重点。', '',
              '隐藏评价保留全部隐藏正边，独立采样等量真实非边；NumPy RNG=seed+1018。公开验证负例只排除全部公开边，独立RNG=seed+2018。', '',
              'Head/Tail与Isolated Tail按端点加权，TT每对计一次；孤立指公开训练图零度。完整图仅用于隐藏正边、真实非边及评价分组。', '',
              '以下为五seed均值±样本SD，分数以0–1表示。', '']
     for dataset in datasets:
-        lines += [f'## {dataset}', '', '| 方法 | 分组 | AUC | F1 | TPR@1% |', '| --- | --- | ---: | ---: | ---: |']
+        lines += [f'## {dataset}', '', '| 方法 | 分组 | AUC | F1 | TPR@5% |', '| --- | --- | ---: | ---: | ---: |']
         for method in ('idf_intersection', 'smia_mlp', 'raw_intersection', 'public_degree'):
             for group in GROUPS:
                 row = lookup[(dataset, method, group)]
                 def cell(metric):
                     value = row[metric]
                     return f'{value["mean"]:.4f}±{value["sample_sd"]:.4f}' if value['n'] > 1 else str(value['mean'])
-                lines.append(f'| {method} | {group} | {cell("AUROC")} | {cell("F1")} | {cell("TPR@1%")} |')
+                lines.append(f'| {method} | {group} | {cell("AUROC")} | {cell("F1")} | {cell("TPR@5%")} |')
         lines.append('')
     lines += ['## 与旧IDF结果比较', '',
               '10月18日逐seedAll诊断和10月22日长尾诊断分表记录；不同旧版本、独立负例、旧人口/ID映射未逐项认证，差值不能归因于单个改动。', '',
@@ -100,7 +100,7 @@ def main():
         if r['method'] == 'idf_intersection':
             lines.append(f'| {r["source"]} | {r["dataset"]} | {r["group"]} | {r["metric"]} | '
                          f'{r["old_mean"]:.4f} | {r["current_mean"]:.4f} | {r["difference"]*100:+.2f} |')
-    lines += ['', '旧IDF探针没有可用F1；本次验证阈值F1是新增结果，不填补旧值。这里的单分数无参数探针也不等于三项推荐统计训练分类器的Rec-IDF-only必要性对照。', '',
+    lines += ['', '旧IDF探针没有可用F1；当前F1统一使用验证All最优阈值，历史固定0.5阈值F1不可混用；TPR@5%不与旧TPR@1%作差。F1是新增结果，不填补旧值。这里的单分数无参数探针也不等于三项推荐统计训练分类器的Rec-IDF-only必要性对照。', '',
               '逐seed指标见metrics.csv；配对差值见paired_deltas.csv；历史差异见historical_comparison.csv。每case保留用户对、分数、阈值、公开验证F1、来源文件SHA256及依赖版本。', '',
               '现有MLP仅CPU推理，未重训。诊断负例与原生产报告不同，CPU/GPU度数并列用户的分组也可能不同；原正式结果不被覆盖。本次执行的是用户请求的统计实验，未运行软件测试。', '']
     (args.run_dir / 'report.md').write_text('\n'.join(lines))

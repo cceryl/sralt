@@ -137,7 +137,7 @@ class TailProxyAttack(AttackModel):
             self.eval()
             values = compute_attack_metrics(data.device,
                 lambda u, v: self.predict(torch.stack([u, v]), data), metrics, val_loader, head, tail)
-            selection_score = sum(values[0])
+            selection_score = values[0][metric_names.index('AUROC')]
             self.training_diagnostics.append(dict(epoch=epoch, selection_score=selection_score,
                                                   validation=dict(zip(metric_names, values[0])), **counts))
             logging.info('TailProxyAttack epoch=%d loss=%.6f validation=%s sparse=%s',

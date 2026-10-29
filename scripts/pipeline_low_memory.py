@@ -120,14 +120,16 @@ def run_pipeline(config: DictConfig) -> None:
             config=config.attack.test, tail_ratio=config.attack.tail_ratio
         )
         logging.info('Attack model evaluation results:')
-        for group, metrics in zip(['All', 'Head', 'Tail'], results):
-            for metric, value in zip(config.attack.test.metrics, metrics):
-                name = metric._target_.split('.')[-1].removeprefix('Binary')
-                logging.info(f'Test {group} {name}: {value:.4f}')
+        for group, values in attack_data.subgroup_metrics.items():
+            logging.info('Test %s: %s', group, values)
         logging.info(f'Model representation: {attack_model}')
         recorded_metrics['attack'] = {
-            group: metric_values(config.attack.test.metrics, values)
-            for group, values in zip(('all', 'head', 'tail'), results, strict=True)
+            {'All': 'all', 'Head': 'head', 'Tail': 'tail', 'TT': 'tail_tail',
+             'isolated_Tail': 'isolated_tail'}[group]: {
+                (f'TPR@FPR={float(key.split("=")[-1]):.0%}' if key.startswith('TPR@FPR=') else key): value
+                for key, value in values.items()
+                if key in ('AUROC', 'F1Score', 'TPR@FPR=0.05')}
+            for group, values in attack_data.subgroup_metrics.items()
         }
         if HydraConfig.initialized():
             output_dir = Path(HydraConfig.get().runtime.output_dir)
@@ -140,6 +142,8 @@ def run_pipeline(config: DictConfig) -> None:
                     'method': 'sal', 'loss_weight': float(config.target.model.attribute.defense.loss_weight)
                 } if config.target.model.attribute.get('defense') is not None else None,
                 'metrics': recorded_metrics,
+                'attack_f1_threshold': attack_data.subgroup_metrics['All']['f1_threshold'],
+                'attack_threshold_source': 'public validation All maximum F1',
             }
             temporary = output_dir / 'metrics.json.tmp'
             temporary.write_text(json.dumps(record, indent=2, allow_nan=False) + '\n')

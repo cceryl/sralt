@@ -142,16 +142,9 @@ def attack_stage(
         tail_ratio=config.tail_ratio
     )
 
-    metric_names = [
-        f'{typing.cast(str, metric._target_).split(".")[-1].removeprefix("Binary")}'
-        for metric in config.test.metrics
-    ]
-
     logging.info('Attack model evaluation results:')
-
-    for group, metrics in zip(['All', 'Head', 'Tail'], test_metrics):
-        for name, value in zip(metric_names, metrics):
-            logging.info(f'Test {group} {name}: {value:.4f}')
+    for group, values in attack_data.subgroup_metrics.items():
+        logging.info('Test %s: %s', group, values)
 
     logging.info(f'Model representation: {attack_model}')
 

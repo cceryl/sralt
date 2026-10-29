@@ -1,5 +1,5 @@
 name: RecOnlyAttack
-revision: rec-count-balanced-tail-v2
+revision: auc-only-v1-rec-count-balanced-tail-v2
 attribute:
   _target_: sralt.attack.model.rec_only.RecOnlyAttack
   hidden_dim: 16
@@ -13,13 +13,10 @@ train:
     lr: 0.001
     weight_decay: 0.0
     grad_clip_norm: 5.0
+  # Checkpoint selection uses public-validation All AUC only.
   metrics:
     - _target_: torchmetrics.AUROC
       task: binary
-    - _target_: torchmetrics.F1Score
-      task: binary
-    - _target_: sralt.utils.TPRatFPR
-      target_fpr: 0.01
   early_stopping:
     _target_: sralt.utils.EarlyStopping
     patience: 5

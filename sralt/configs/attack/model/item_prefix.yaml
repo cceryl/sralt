@@ -1,5 +1,5 @@
 name: ItemPrefixAttack
-revision: item-prefix-bce1-v1
+revision: auc-only-v1-item-prefix-bce1-v1
 attribute:
   _target_: sralt.attack.model.item_prefix.ItemPrefixAttack
   prefix_levels: ${shadow.model.attribute.levels}
@@ -19,10 +19,9 @@ train:
     lr: 0.001
     weight_decay: 0.0001
     grad_clip_norm: 1.0
+  # Checkpoint selection uses public-validation All AUC only.
   metrics:
     - _target_: torchmetrics.AUROC
-      task: binary
-    - _target_: torchmetrics.F1Score
       task: binary
   early_stopping:
     _target_: sralt.utils.EarlyStopping

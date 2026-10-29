@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from summarize_tail_proxy import summarize as summarize_metrics, write_csv, GROUPS
+from summarize_tail_proxy import summarize as summarize_metrics, write_csv, GROUPS, METRICS
 
 
 def summarize(run_dir, output_dir=None):
@@ -42,7 +42,7 @@ def summarize(run_dir, output_dir=None):
             deltas = {}
             for reference, record in zip(('csa', 'item_prefix_joint'), references, strict=True):
                 for group in GROUPS:
-                    for metric in ('AUROC', 'F1Score'):
+                    for metric in METRICS:
                         value, baseline = result['groups'][group][metric], record['groups'][group][metric]
                         deltas[(reference, group, metric)] = value - baseline if value is not None and baseline is not None else None
             valid = [value for value in deltas.values() if value is not None]
@@ -71,7 +71,7 @@ def summarize(run_dir, output_dir=None):
               ['target', 'dataset', 'seed', 'condition', 'reference', 'group', 'metric', 'delta', 'category'])
     with (output_dir / 'report.md').open('a') as handle:
         handle.write('\n公开V诊断见public_complementarity.csv/public_calibration.csv，逐概率bin保存在metrics.json。'
-                     'expert_comparisons.csv逐seed同时比较两位原专家，Pareto判据覆盖五组AUC/F1；混合结果不选组别赢家。'
+                     'expert_comparisons.csv逐seed同时比较两位原专家，Pareto判据覆盖五组AUC/验证All最优阈值F1/TPR@5%；混合结果不选组别赢家。'
                      'training_costs.csv记录新增参数量和拟合成本；oof_costs.csv将六次辅助拟合各计一次共享成本。\n')
     return success
 

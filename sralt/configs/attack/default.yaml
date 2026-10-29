@@ -1,3 +1,5 @@
+# Every attack model inherits test/default: AUC, shared validation-All-optimal F1, TPR@5%.
+# All trainable attacks select checkpoints by public-validation All AUC only.
 defaults:
   - data: default
   - model: ensemble

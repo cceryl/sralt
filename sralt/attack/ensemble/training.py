@@ -244,7 +244,8 @@ def load_fusion_model(*, identity, condition, seed, deterministic, settings, evi
         for metric in metrics:
             metric.cpu().reset()
             values.append(float(metric(probability, validation['labels'])))
-        score = sum(values)
+        score = values[next(i for i, metric in enumerate(metrics)
+                                if type(metric).__name__.removeprefix('Binary') == 'AUROC')]
         history.append(dict(epoch=epoch, loss=loss_sum / labels.numel(), validation=values))
         logging.info('Fusion %s epoch=%d loss=%.6f val=%s', condition, epoch, history[-1]['loss'], values)
         if stop.step(score):
@@ -253,5 +254,5 @@ def load_fusion_model(*, identity, condition, seed, deterministic, settings, evi
     model.training_summary = dict(actual_epochs=len(history), best_epoch=stop.best_epoch, best_metric=stop.best_metric,
         elapsed_seconds=time.monotonic() - started,
         negative_sampling='fixed OOF scoring rows' if oof is not None else 'resampled each epoch; T only',
-        supervision='OOF scores' if oof is not None else 'formal fixed coordinates on public T', history=history)
+        selection_metric='validation_all_auc', supervision='OOF scores' if oof is not None else 'formal fixed coordinates on public T', history=history)
     return model.cpu().eval()

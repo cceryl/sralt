@@ -12,7 +12,7 @@ EXPERIMENT_REVISION = 'tail-proxy-e100-bce1-v4'
 CONDITIONS = ('baseline', 'tail_proxy')
 
 GROUPS = ('All', 'Head', 'Tail', 'TT', 'isolated_Tail')
-METRICS = ('AUROC', 'F1Score', 'TPR@FPR=0.01')
+METRICS = ('AUROC', 'F1Score', 'TPR@FPR=0.05')
 
 
 def write_csv(path, rows, fields):
@@ -48,6 +48,8 @@ def read_record(run_dir, case, condition, expected_revision=None):
     if (record['target'], record['dataset'], record['seed'], record['condition']) != (
             case['target'], case['dataset'], case['seed'], condition):
         raise ValueError('Recorded case identity differs from manifest')
+    if any('f1_threshold' not in record['groups'][g] for g in GROUPS):
+        raise ValueError('Historical report has no shared optimal F1 threshold; re-evaluate into a new run directory.')
     for group in GROUPS:
         for metric in METRICS:
             if not isinstance(record['groups'][group][metric], (int, float)) or not math.isfinite(record['groups'][group][metric]):
@@ -129,18 +131,19 @@ def summarize(run_dir, output_dir=None):
         write_csv(output_dir / 'paired_cases.csv', paired,
                   ['target', 'dataset', 'seed', 'left', 'right', 'group', 'metric', 'status', 'delta'])
     lookup = {(r['target'], r['dataset'], r['condition'], r['group'], r['metric']): r for r in summary}
-    report = [manifest.get('report_title', '# TailProxy实验结果'), '', f'{complete}/{len(cases)}条评价完成。AUC/F1为主，TPR@1%为次；所有表保留缺失seed。', '',
-              manifest.get('method_description', 'baseline采用原已接受规则及可复用权重；其余方法使用各自保存的配置，最终在CPU共用固定隐藏用户对及分组。'), '',
+    report = [manifest.get('report_title', '# TailProxy实验结果'), '', f'{complete}/{len(cases)}条评价完成。指标为AUC、验证All最优阈值F1、TPR@5%；重点组为All、Tail、TT；所有表保留缺失seed。', '',
+              manifest.get('method_description', '各方法使用保存的配置，最终在CPU共用固定隐藏用户对及分组。'), '',
+              '攻击分类器仅以公开验证All AUC选模；恢复最佳模型后在验证All选择F1阈值，冻结用于全部测试用户对和五个分组。F1/TPR不参与选模。', '',
               manifest.get('contrast_description', '差值为TailProxy−baseline；逐seed差值及汇总见paired.csv。未运行的计划不算完成。'), '']
     for target in manifest['targets']:
         for dataset in manifest['datasets']:
-            report += [f'## {target}/{dataset}', '', '| 条件 | 分组 | n | AUC | F1 | TPR@1% |', '| --- | --- | ---: | ---: | ---: | ---: |']
+            report += [f'## {target}/{dataset}', '', '| 条件 | 分组 | n | AUC | F1 | TPR@5% |', '| --- | --- | ---: | ---: | ---: | ---: |']
             for condition in expected:
                 for group in GROUPS:
                     rows = [lookup[(target, dataset, condition, group, metric)] for metric in METRICS]
                     def cell(row):
                         return 'N/A' if not row['n'] else f'{row["mean"]:.4f}' + (f'±{row["sample_sd"]:.4f}' if row['sample_sd'] is not None else '')
-                    report.append(f'| {condition} | {group} | {rows[0]["n"]} | ' + ' | '.join(map(cell, rows)) + ' |')
+                    report.append(f'| {condition} | {group + (" ★" if group in ("All", "Tail", "TT") else "")} | {rows[0]["n"]} | ' + ' | '.join(map(cell, rows)) + ' |')
             report.append('')
     (output_dir / 'report.md').write_text('\n'.join(report) + '\n')
     print(f'{complete}/{len(cases)} evaluations complete; {output_dir / "report.md"}', flush=True)

@@ -5,7 +5,9 @@ from pathlib import Path
 
 
 def save_attack_report(data, model, output_dir):
-    report = {'groups': getattr(data, 'subgroup_metrics', {}),
+    from sralt.utils.attack_groups import REPORT_REVISION, PRIMARY_GROUPS
+    report = {'report_revision': REPORT_REVISION, 'primary_groups': PRIMARY_GROUPS,
+              'groups': getattr(data, 'subgroup_metrics', {}),
               'shadow': getattr(data, 'shadow_diagnostics', {}),
               'normalization': getattr(model, 'normalization_diagnostics', {}),
               'sparse_training': getattr(model, 'training_diagnostics', [])}

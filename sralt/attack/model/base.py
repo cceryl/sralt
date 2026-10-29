@@ -48,7 +48,9 @@ class AttackModel(nn.Module, ABC):
         :param tail_ratio: Proportion of users classified as long-tail users based on social connection counts.
         :param metrics: A list of metric calculators.
         :param kwargs: Testing config specific to the model.
-        :return: A tuple of lists of computed metric values for all, head, and tail groups.
+        Final evaluation uses one public-validation-All-optimal F1 threshold for every group.
+        Five-group metrics and threshold metadata are stored on data.subgroup_metrics.
+        :return: Metric lists for All/Head/Tail, retained for existing callers.
         """
         pass
 

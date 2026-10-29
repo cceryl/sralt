@@ -160,7 +160,7 @@ class MLP(AttackModel):
                     for name, value in zip(metric_names, results):
                         writer.add_scalar(f'{model_name}/{name}/{group}', value, epoch)
 
-            if early_stopping.step(sum(all_results)):
+            if early_stopping.step(all_results[metric_names.index('AUROC')]):
                 break
 
         early_stopping.load_best_state()

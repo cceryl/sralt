@@ -53,7 +53,9 @@ def saved_result(config, condition, dataset, target):
         manifest = json.loads(manifest_path.read_text())
         d = json.loads(path.read_text())
         r = d.get('results', {}).get(condition)
-        if (r is None or d.get('experiment_revision') != EXPERIMENT_REVISION
+        if (r is None or 'f1_threshold' not in r.get('groups', {}).get('All', {})
+                or 'TPR@FPR=0.05' not in r.get('groups', {}).get('All', {})
+                or d.get('experiment_revision') != EXPERIMENT_REVISION
                 or d.get('source_fingerprint') != manifest.get('identity', {}).get('source_fingerprint')
                 or d.get('config') != expected or d.get('seed') != config.seed
                 or (d.get('target'), d.get('dataset')) != (target, dataset)):

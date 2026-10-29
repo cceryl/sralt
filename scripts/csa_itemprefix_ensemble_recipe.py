@@ -15,7 +15,7 @@ for stage in ('S1', 'H', 'U'):
     SUITES[stage] = ('csa', 'item_prefix_joint', 'score_mean', *STAGES[stage])
 SUITES['all'] = tuple(name for conditions in STAGES.values() for name in conditions)
 OOF_CONDITIONS = ('gate_degree', 'gate_user', 'platt_mean')
-TRAINING = dict(num_epochs=50, patience=5, batch_size=512, lr=.001, weight_decay=.0001,
+TRAINING = dict(selection_metric='validation_all_auc', num_epochs=50, patience=5, batch_size=512, lr=.001, weight_decay=.0001,
                 platt_max_iter=100, platt_l2=.0001)
 
 
